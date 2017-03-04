@@ -56,8 +56,7 @@ Dim IsFile As Boolean
     IO_defaults "read"
 
 'Import data to Sonar worksheet
-    Worksheets("Combo").Activate
-    Range("A1").Activate
+    combo.Range("A1").Activate
     If record = "na" Then
         fileprompt = vbNo
     Else
@@ -136,7 +135,7 @@ Dim IsFile As Boolean
     ActiveChart.FullSeriesCollection(2).Values = "=Export!$C$2:$C$" & seconds + 1  'Bed_elev
 
 'Extract data to Export sheet
-    Worksheets("Export").Activate
+    expo.Activate
     'Write Excel formulas so changes to Combo are dynamically adjusted
     For row = 1 To seconds
         Cells(row + 1, 1).FormulaR1C1 = "=Combo!RC[12]"  'Northing
@@ -206,7 +205,7 @@ Private Sub sonar_import()
 '       DAT file -- holds record info for starting date and time, duration, and beginning coordinates
 '       IDX files -- two 4-byte fields per record specifying a time increment and a line index in the SON file
 '       SON files -- complex binary file with full navigation data and imagery for each record
-Dim bytes() As Byte  'holds binary data from IDX file
+Dim idx_data() As Byte  'holds binary data from IDX file
 Dim f As Integer  'file index number
 Dim fLen As Long  'length of IDX file in bytes
 Dim DEbook As Workbook  'Data Explorer workbook
@@ -221,8 +220,8 @@ Dim cog As Double  'Course over ground
     f = FreeFile
     Open path & record & "\B002.IDX" For Binary Access Read As #f
     fLen = LOF(f)
-    ReDim bytes(1 To fLen)
-    Get f, , bytes
+    ReDim idx_data(1 To fLen)
+    Get f, , idx_data
     Close f
 
 'Choose data explorer file (DEfile) path
@@ -274,7 +273,7 @@ Dim cog As Double  'Course over ground
     Range("A2").Select
     For row = 0 To fLen \ 8 - 1  'Backslash operator is integer division
         'First 4 bytes of each 8-byte record hold time stamp info
-        Cells(row + 2, 1) = fulldate + (bytes(row * 8 + 2) * 65536 + bytes(row * 8 + 3) * CLng(256) + bytes(row * 8 + 4)) / 24 / 3600 / 1000
+        Cells(row + 2, 1) = fulldate + (idx_data(row * 8 + 2) * 65536 + idx_data(row * 8 + 3) * CLng(256) + idx_data(row * 8 + 4)) / 24 / 3600 / 1000
     Next row
     DATbook.Worksheets(1).Range("A2:C" & row + 1).Copy Destination:=Range("B2")  'Copy XYZ data from DATbook to Sonar sheet
     DATbook.Close
@@ -322,25 +321,25 @@ Dim r As linear  'Store regression values
 
 'Average Sonar records for X, Y, Depth, and calculated COG over full-second intervals
     seconds = timer(Cells(row, 1), Cells(2, 1))  'Number of full seconds in data record
-    Worksheets("Combo").Activate
+    combo.Activate
     prev = 0
     srow = 0
-    t1 = Worksheets("Sonar").Cells(srow + 2, 1)
+    t1 = sonar.Cells(srow + 2, 1)
     For i = 1 To seconds
         Cells(i + 1, 1) = i  'Index
         If i = 1 Then
             'Set first value to start time
-            Cells(2, 2) = Worksheets("Sonar").Range("A2")
+            Cells(2, 2) = sonar.Range("A2")
         Else
             'Increment sonar time by 1 second
             Cells(i + 1, 2) = Cells(i, 2) + 1 / 24 / 3600
         End If
         'Count number of rows in Sonar for each second of data
         t2 = Cells(i + 1, 2) + 1 / 24 / 3600  'Set t2 to time plus one second
-        Do While (t1 < t2 - 0.000000005) And (Worksheets("Sonar").Cells(srow + 2, 1) <> "")
+        Do While (t1 < t2 - 0.000000005) And (sonar.Cells(srow + 2, 1) <> "")
             '0.000000005 needed to correct for rounding errors
             srow = srow + 1
-            t1 = Worksheets("Sonar").Cells(srow + 2, 1)  'Set t1 to ping time
+            t1 = sonar.Cells(srow + 2, 1)  'Set t1 to ping time
         Loop
         Cells(i + 1, 3) = srow  'Row (starting row of each full-second record)
         avgX = 0
@@ -349,14 +348,14 @@ Dim r As linear  'Store regression values
         'X = x1 + sin(radians(cog)) * tlen
         'Y = y1 - cos(radians(cog)) * tlen
         For j = prev + 1 To srow
-            avgX = avgX + Worksheets("Sonar").Cells(j + 1, 2) + Sin(WorksheetFunction.Pi / 180 * Worksheets("Sonar").Cells(j + 1, 5)) * tlen
-            avgY = avgY + Worksheets("Sonar").Cells(j + 1, 3) - Cos(WorksheetFunction.Pi / 180 * Worksheets("Sonar").Cells(j + 1, 5)) * tlen
+            avgX = avgX + sonar.Cells(j + 1, 2) + Sin(WorksheetFunction.Pi / 180 * sonar.Cells(j + 1, 5)) * tlen
+            avgY = avgY + sonar.Cells(j + 1, 3) - Cos(WorksheetFunction.Pi / 180 * sonar.Cells(j + 1, 5)) * tlen
         Next j
         'Write averaged X, Y, COG, and depth
         Cells(i + 1, 4) = avgX / (srow - prev)  'X
         Cells(i + 1, 5) = avgY / (srow - prev)  'Y
-        Cells(i + 1, 6) = WorksheetFunction.Sum(Worksheets("Sonar").Range("E" & prev + 2 & ":E" & srow + 1)) / (srow - prev)  'COG
-        dep = WorksheetFunction.Sum(Worksheets("Sonar").Range("D" & prev + 2 & ":D" & srow + 1)) / (srow - prev)  'Depth
+        Cells(i + 1, 6) = WorksheetFunction.Sum(sonar.Range("E" & prev + 2 & ":E" & srow + 1)) / (srow - prev)  'COG
+        dep = WorksheetFunction.Sum(sonar.Range("D" & prev + 2 & ":D" & srow + 1)) / (srow - prev)  'Depth
         'If depth was recorded as Bottom Elevation from SonarTRX, change sign to positive
         If dep < 0 Then Cells(i + 1, 7) = -1 * dep Else Cells(i + 1, 7) = dep
         prev = srow
@@ -474,7 +473,7 @@ Dim RTKstart, RTKend As Long  'Starting and ending row numbers in RTKbook to cop
 Dim dt As Long
 
 'Clear anything past header row on Worksheets("RTK")
-    Set rng = Worksheets("RTK").UsedRange
+    Set rng = rtk.UsedRange
     Set rng = rng.Offset(1, 0).Resize(rng.Rows.count - 1)
     rng.ClearContents
 
@@ -513,87 +512,12 @@ Dim dt As Long
     RTKstart = find_row(date1, "initial")
     RTKend = find_row(date2, "final")
     'Copy data from RTKbook
-    mybook.Worksheets("RTK").Range("A2:Q" & 2 + RTKend - RTKstart).Value = RTKbook.Worksheets(1).Range("A" & RTKstart & ":Q" & RTKend).Value
+    mybook.rtk.Range("A2:Q" & 2 + RTKend - RTKstart).Value = RTKbook.Worksheets(1).Range("A" & RTKstart & ":Q" & RTKend).Value
     Application.DisplayAlerts = False  'Prevent "Save changes" dialog
     RTKbook.Close
     Application.DisplayAlerts = True
-    mybook.Worksheets("RTK").Activate
+    mybook.rtk.Activate
     Application.ScreenUpdating = True
-
-'Remove duplicate position entries (RTK output often has duplicate records after gaps)
-'    row = 2
-'    Do While Cells(row + 1, 1) > 0
-'        If Cells(row + 1, 4) = Cells(row, 4) Then 'No change in Northing
-'            If Cells(row + 1, 5) = Cells(row, 5) Then 'No change in Easting
-'                Cells(row, 1).EntireRow.Delete
-'            End If
-'        End If
-'        row = row + 1
-'    Loop
-
-'Insert blank rows
-    row = 2
-    Do While Cells(row + 1, 1) > 0
-        dt = timer(Cells(row + 1, 3), Cells(row, 3))
-        If dt = 0 Then  'remove duplicates or average multiple records per second
-            If Cells(row + 1, 4) = Cells(row, 4) And Cells(row + 1, 5) = Cells(row, 5) Then  'no change in position
-                Cells(row, 1).EntireRow.Delete
-            Else
-                'XXXX DO AVERAGING OF VALUES HERE
-                'AVG RTK_X, RTK_Y, RTK_Z, ETC.
-                'PLACE AVERAGED VALUES IN FIRST ROW, DELETE THE REST
-                'this is inside an if statement that only executes once, it needs to loop multiple times to capture avgeraging sums and count
-                'or consider using worksheetfunction.average(cells(row+1,4):cells(row+dt,4))
-            End If
-        Else
-            If dt > 1 And dt < 7200 Then  'No more than two hour gap
-                Rows(row + 1 & ":" & row + dt - 1).Insert
-                For i = 1 To dt - 1
-                    Cells(row + i, 3) = Cells(row + i - 1, 3) + 1 / 24 / 3600
-                Next i
-            End If
-        End If
-        row = row + dt
-    Loop
-
-'Move entire block to add rows just to the Combo sheet section; don't need blank rows on the RTK sheet
-'Old workflow: empty rows added to rtk sheet here for missing records, info on combo sheet later evaluated to see if it was empty using simple for loop
-'New workflow: just delete duplicates here, later when the info is read to combo sheet average full-second records and add missing ones
-'CHECK TO SEE IF RESULTING ROW VALUE IS USED IN NEXT SUB, IT MAY BE WRONG NOW (COULD USE TIMER FUNCTION TO COUNT END-START SECONDS)
-'XXXXX old dt loop
-'XXXX
-    'New process steps:
-    'lookup first time from sonar sheet
-    'count number of RTK records with matching time
-    'average position for matching RTK records
-    'if count = 0, use a placeholder RTK_ID of 9999
-    'loop through all sonar times averaging RTK records
-    'loop through all averaged RTK records on sonar sheet again and interpolate 9999 values
-        'this part should already happen, it already interps all missing RTK values
-    'rtk_row = FIRST MATCH
-    'for row = 2 to seconds
-        'time = cells(row, 2)
-        'count = 0
-        'rtk_x = 0
-        'rtk_y = 0
-        'while timer(time, RTKsheet.cells(rtk_row + count, 2)) < 0.1
-            'count = count + 1
-            'rtk_y = rtk_y + RTKsheet.cells(rtk_row + count, 4)
-            'rtk_x = rtk_x + RTKsheet.cells(rtk_row + count, 5)
-            'rtk_z = rtk_z + RTKsheet.cells(rtk_row + count, 6)
-            'etc... average all RTK values
-        'loop
-        'if count = 0 then
-            'value = 9999
-        'else
-            'cells(row,13) = rtk_y/count
-            'cells(row,14) = rtk_x/count
-            'cells(row,16) = rtk_z/count
-        'end if
-        'etc.... fill in averaged values, 9999 if count=0
-        'rtk_row = rtk_row + count
-    'next row
-'XXXX
 
 End Sub
 
@@ -607,72 +531,172 @@ Dim i As Long  'Counter
 Dim r As linear  'Store regression values
 Const maxZ = 0.03  'Maximum allowable RTK precision in Z; 3 cm based on equipment limitations
 Const maxXY = 0.15  'Maximum allowable RTK precision in XY; based on limiting overall uncertainty
+'XXX NEW VARS
+Dim rtk_row As Long
+Dim dt As Long
+Dim count As Long
+Dim combo_row As Long
+Dim maxrow As Long
+Dim last As Long
+Dim rtk_data() As Variant
 
-mybook.Worksheets("Combo").Activate
-'Set start row in RTK sheet to offset if there is an initial gap in data
-start = Round((Range("B2") - Worksheets("RTK").Range("C2")) * 24 * 3600, 0) + 1
-For i = 1 To seconds
-    cog = 9999  'Initialize to invalid value to test for changes
-    If i + start < 2 Then
-    'RTK record starts later than sonar, can't interpolate
-        Cells(i + 1, 12) = Cells(i + 1, 2) 'No matching RTK time, use time from Combo sheet
-        Cells(i + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
-        Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
-        Cells(i + 1, 22) = "None,Extrapolated"  'RTK Solution Type
-    Else
-        Cells(i + 1, 12) = Worksheets("RTK").Cells(i + start, 3)  'RTK Time
-        If Worksheets("RTK").Cells(i + start, 7) <= maxXY And Worksheets("RTK").Cells(i + start, 1) <> "" Then
-        'Horizontal precision OK
-            Cells(i + 1, 11) = Worksheets("RTK").Cells(i + start, 2)  'Point_ID
-            Cells(i + 1, 20) = Worksheets("RTK").Cells(i + start, 7)  'StDev_XY
-            'Calculate COG_RTK, Northing and Easting
-            If Worksheets("RTK").Cells(i + start + 1, 7) <= maxXY And Worksheets("RTK").Cells(i + start + 1, 1) <> "" Then
-            'Next horizontal precision is OK: calculate COG, X and Y between two valid points
-            'cog = mod(degrees(atan2(x2 - x1, y2 - y1)) + 270, 360)
-                On Error Resume Next  'No change in position results in division by zero error (Err.Number = 11)
-                cog = WorksheetFunction.Atan2( _
-                    Worksheets("RTK").Cells(i + start + 1, 5) - Worksheets("RTK").Cells(i + start, 5), _
-                    Worksheets("RTK").Cells(i + start + 1, 4) - Worksheets("RTK").Cells(i + start, 4))
-                If Err.Number <> 0 Then cog = 0  'Set COG to 0 for static position
-                On Error GoTo 0  'Reset error handling
-                cog = cog * 180 / WorksheetFunction.Pi + 270  'Switch to zero degrees North
-                If cog >= 360 Then cog = cog - 360  'Force 0 < COG < 360
-            Else  'No second point: calculate COG from slope of valid points above
-                If i > 1 And Cells(i, 15) <> "" Then 'Previous point has valid COG
-                    r = regress(i, 15, 5, , 15)  'Regression through last five valid COGs
-                    cog = r.a + r.b * (1 + r.n)  'y = a + bx
-                End If
-            End If
-            If cog <> 9999 Then  'Check if cog was calculated
-                Cells(i + 1, 15) = cog  'COG_RTK
-                'Use XY position and COG to offset transducer
-                Xrtk = Worksheets("RTK").Cells(i + start, 5) + Sin(WorksheetFunction.Pi / 180 * cog) * tlen
-                Yrtk = Worksheets("RTK").Cells(i + start, 4) - Cos(WorksheetFunction.Pi / 180 * cog) * tlen
-                Cells(i + 1, 8) = Xrtk - Cells(i + 1, 4)  'X-offset = Xrtk - Xsonar
-                Cells(i + 1, 9) = Yrtk - Cells(i + 1, 5)  'Y-offset = Yrtk - Ysonar
-                Cells(i + 1, 14) = Xrtk  'Easting
-                Cells(i + 1, 13) = Yrtk  'Northing
-            End If
-            If Worksheets("RTK").Cells(i + start, 8) <= maxZ Then
-            'Horizontal and vertical precision OK
-                Cells(i + 1, 16) = Worksheets("RTK").Cells(i + start, 6)  'Elev
-                Cells(i + 1, 21) = Worksheets("RTK").Cells(i + start, 8)  'StDev_Z
-                Cells(i + 1, 22) = Worksheets("RTK").Cells(i + start, 17)  'RTK Solution Type
-            Else
-            'Only horizontal precision OK
-                Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
-                Cells(i + 1, 22) = "Float,Horizontal"  'RTK Solution Type
-            End If
+mybook.combo.Activate
+
+'Import data from RTK sheet, averaging records and leaving gaps as needed
+    combo_row = 2
+    maxrow = 30
+'    rtk_row = timer(Cells(2, 2), rtk.Cells(2, 3)) 'Set start row in RTK sheet to offset if there is an initial gap in data
+    'Initialize starting rtk row to offset if there is an initial gap in data
+    rtk_row = 2
+    Do While rtk.Cells(rtk_row, 3) < Cells(2, 2)
+        rtk_row = rtk_row + 1
+    Loop
+    
+    'Import data from RTK sheet
+    start = Round((Range("B2") - Worksheets("RTK").Range("C2")) * 24 * 3600, 0) + 1
+    Do While combo_row <= last
+        cog = 9999  'Initialize to invalid value to test for changes
+        If combo_row + start < 2 Then
+        'RTK record starts later than sonar, can't interpolate
+            Cells(combo_row + 1, 12) = Cells(combo_row + 1, 2) 'No matching RTK time, use time from Combo sheet
+            Cells(combo_row + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
+            Cells(combo_row + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
+            Cells(combo_row + 1, 22) = "None,Extrapolated"  'RTK Solution Type
         Else
-        'Neither horizontal nor vertial precision OK
-            Cells(i + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
-            Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
-            Cells(i + 1, 22) = "None,Interpolated"  'RTK Solution Type
+        
+        dt = timer(rtk.Cells(rtk_row, 3), rtk.Cells(rtk_row + 1, 3))
+        'Three cases:
+        'dt > 1 -- fill missing times and blank details on combo (horiz, vert precision, soln type) for later interpolation
+        'dt = 0 -- import average of multiple records per second, ignoring duplicate positions
+        'dt = 1 -- one-second gap, import rtk data directly to combo sheet
+        'dt < 0 -- not possible since times are sequential
+        '
+        'check for dt > 1, meaning there is a gap in the data
+        If dt > 1 Then 'fill gap in rtk record with basic data for later interpolation
+'XXXX            If dt < 7200 Then  'No more than two hour gap
+            If combo_row + dt - 1 < maxrow Then
+                last = dt - 1
+            Else: last = maxrow
+            End If
+            For i = 1 To last
+                'fill basic rtk info for missing data
+                Cells(combo_row + i, 12) = Cells(combo_row + i - 1, 3) + 1 / 24 / 3600 'rtk time
+            Next i
+            combo_row = combo_row + dt
+        Else 'dt = 0 or 1
+            If rtk.Cells(rtk_row + 1, 4) = rtk.Cells(rtk_row, 4) And rtk.Cells(rtk_row + 1, 5) = rtk.Cells(rtk_row, 5) Then  'no change in position
+                rtk_row = rtk_row + 1 'skip over duplicate position
+            Else
+                count = 0
+                Do While dt <= 1 'dt is 0 if there are multiple records per second or duplicate records, or 1 if there is a single one-second record
+                    count = count + 1
+                    dt = timer(rtk.Cells(rtk_row + 1, 3), rtk.Cells(rtk_row + count + 1, 3))
+                Loop
+                rtk_data = rtk.Range(rtk.Cells(rtk_row, 2), rtk.Cells(rtk_row + count, 16)) 'load multiple records in an array
+                rtk_row = rtk_row + count
+            End If
+            combo_row = combo_row + 1
         End If
-    End If
-    Cells(i + 1, 18).FormulaR1C1 = "=RC[-2] - RC[3]"  'Min = Elev - StDev_Z
-    Cells(i + 1, 19).FormulaR1C1 = "=RC[-3] + RC[2]"  'Max = Elev + StDev_Z
-Next i
+    Loop
+        
+'        If dt <= 1 Then  'average multiple records per second, ignoring duplicate positions
+'            If rtk.Cells(row + 1, 4) = rtk.Cells(row, 4) And rtk.Cells(row + 1, 5) = rtk.Cells(row, 5) Then  'no change in position
+'                rtk_row = rtk_row + 1 'skip over duplicate position
+'            Else
+'                count = 1
+'                While timer(rtk.Cells(rtk_row + 1, 3), rtk.Cells(rtk_row + count + 1, 3)) = 0
+'                    count = count + 1
+'                Loop
+'                rtk_data = rtk.Range(rtk.Cells(rtk_row, 2), rtk.Cells(rtk_row + dt + 1, 16)) 'load multiple records in an array
+'                For i = 1 To dt
+'
+'                Next i
+'                'XXXX DO AVERAGING OF VALUES HERE
+'                'AVG RTK_X, RTK_Y, RTK_Z, ETC.
+'                'PLACE AVERAGED VALUES IN FIRST ROW, DELETE THE REST
+'                'this is inside an if statement that only executes once, it needs to loop multiple times to capture avgeraging sums and count
+'                'or consider using worksheetfunction.average(cells(row+1,4):cells(row+dt,4))
+'            End If
+'        ElseIf dt > 1 Then 'gap in rtk record of at least one second
+'            If dt < 7200 Then  'No more than two hour gap
+''                Rows(row + 1 & ":" & row + dt - 1).Insert
+'                For i = 1 To dt - 1
+'                    Cells(row + i, 3) = Cells(row + i - 1, 3) + 1 / 24 / 3600
+'                Next i
+'            End If
+'        Else 'dt = 1, import data directly
+'            'XXXX import data row
+'            'could possibly combine with dt = 0, just average of count = 1 records?
+'        End If
+'        row = row + dt
+'    Loop
+
+
+'mybook.Worksheets("Combo").Activate
+''Set start row in RTK sheet to offset if there is an initial gap in data
+'start = Round((Range("B2") - Worksheets("RTK").Range("C2")) * 24 * 3600, 0) + 1
+'For i = 1 To seconds
+'    cog = 9999  'Initialize to invalid value to test for changes
+'    If i + start < 2 Then
+'    'RTK record starts later than sonar, can't interpolate
+'        Cells(i + 1, 12) = Cells(i + 1, 2) 'No matching RTK time, use time from Combo sheet
+'        Cells(i + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
+'        Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
+'        Cells(i + 1, 22) = "None,Extrapolated"  'RTK Solution Type
+'    Else
+'        Cells(i + 1, 12) = Worksheets("RTK").Cells(i + start, 3)  'RTK Time
+'        If Worksheets("RTK").Cells(i + start, 7) <= maxXY And Worksheets("RTK").Cells(i + start, 1) <> "" Then
+'        'Horizontal precision OK
+'            Cells(i + 1, 11) = Worksheets("RTK").Cells(i + start, 2)  'Point_ID
+'            Cells(i + 1, 20) = Worksheets("RTK").Cells(i + start, 7)  'StDev_XY
+'            'Calculate COG_RTK, Northing and Easting
+'            If Worksheets("RTK").Cells(i + start + 1, 7) <= maxXY And Worksheets("RTK").Cells(i + start + 1, 1) <> "" Then
+'            'Next horizontal precision is OK: calculate COG, X and Y between two valid points
+'            'cog = mod(degrees(atan2(x2 - x1, y2 - y1)) + 270, 360)
+'                On Error Resume Next  'No change in position results in division by zero error (Err.Number = 11)
+'                cog = WorksheetFunction.Atan2( _
+'                    Worksheets("RTK").Cells(i + start + 1, 5) - Worksheets("RTK").Cells(i + start, 5), _
+'                    Worksheets("RTK").Cells(i + start + 1, 4) - Worksheets("RTK").Cells(i + start, 4))
+'                If Err.Number <> 0 Then cog = 0  'Set COG to 0 for static position
+'                On Error GoTo 0  'Reset error handling
+'                cog = cog * 180 / WorksheetFunction.Pi + 270  'Switch to zero degrees North
+'                If cog >= 360 Then cog = cog - 360  'Force 0 < COG < 360
+'            Else  'No second point: calculate COG from slope of valid points above
+'                If i > 1 And Cells(i, 15) <> "" Then 'Previous point has valid COG
+'                    r = regress(i, 15, 5, , 15)  'Regression through last five valid COGs
+'                    cog = r.a + r.b * (1 + r.n)  'y = a + bx
+'                End If
+'            End If
+'            If cog <> 9999 Then  'Check if cog was calculated
+'                Cells(i + 1, 15) = cog  'COG_RTK
+'                'Use XY position and COG to offset transducer
+'                Xrtk = Worksheets("RTK").Cells(i + start, 5) + Sin(WorksheetFunction.Pi / 180 * cog) * tlen
+'                Yrtk = Worksheets("RTK").Cells(i + start, 4) - Cos(WorksheetFunction.Pi / 180 * cog) * tlen
+'                Cells(i + 1, 8) = Xrtk - Cells(i + 1, 4)  'X-offset = Xrtk - Xsonar
+'                Cells(i + 1, 9) = Yrtk - Cells(i + 1, 5)  'Y-offset = Yrtk - Ysonar
+'                Cells(i + 1, 14) = Xrtk  'Easting
+'                Cells(i + 1, 13) = Yrtk  'Northing
+'            End If
+'            If Worksheets("RTK").Cells(i + start, 8) <= maxZ Then
+'            'Horizontal and vertical precision OK
+'                Cells(i + 1, 16) = Worksheets("RTK").Cells(i + start, 6)  'Elev
+'                Cells(i + 1, 21) = Worksheets("RTK").Cells(i + start, 8)  'StDev_Z
+'                Cells(i + 1, 22) = Worksheets("RTK").Cells(i + start, 17)  'RTK Solution Type
+'            Else
+'            'Only horizontal precision OK
+'                Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
+'                Cells(i + 1, 22) = "Float,Horizontal"  'RTK Solution Type
+'            End If
+'        Else
+'        'Neither horizontal nor vertial precision OK
+'            Cells(i + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
+'            Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
+'            Cells(i + 1, 22) = "None,Interpolated"  'RTK Solution Type
+'        End If
+'    End If
+'    Cells(i + 1, 18).FormulaR1C1 = "=RC[-2] - RC[3]"  'Min = Elev - StDev_Z
+'    Cells(i + 1, 19).FormulaR1C1 = "=RC[-3] + RC[2]"  'Max = Elev + StDev_Z
+'Next i
 
 End Sub
 
@@ -803,29 +827,6 @@ Dim dt As Integer
     End If
     find_row = index + 1  'set value to actual worksheet row number
 End Function
-
-Private Sub add_rows()
-'Move entire block to add rows just to the Combo sheet section; don't need blank rows on the RTK sheet
-'Old workflow: empty rows added to rtk sheet here for missing records, info on combo sheet later evaluated to see if it was empty using simple for loop
-'New workflow: just delete duplicates here, later when the info is read to combo sheet average full-second records and add missing ones
-'CHECK TO SEE IF RESULTING ROW VALUE IS USED IN NEXT SUB, IT MAY BE WRONG NOW (COULD USE TIMER FUNCTION TO COUNT END-START SECONDS)
-
-'XXXXX old dt loop
-'    Do While Cells(row + 1, 1) > 0
-'        dt = Timer(Cells(row + 1, 3), Cells(row, 3))
-'        If dt = 0 Then  'The RTK output often creates duplicate records after gaps, remove duplicates here
-'                Cells(row, 1).EntireRow.Delete
-'        Else
-'            If dt > 1 And dt < 7200 Then  'No more than two hour gap
-'                Rows(row + 1 & ":" & row + dt - 1).Insert
-'                For i = 1 To dt - 1
-'                    Cells(row + i, 3) = Cells(row + i - 1, 3) + 1 / 24 / 3600
-'                Next i
-'            End If
-'        End If
-'        row = row + dt
-'    Loop
-End Sub
 
 Private Sub interpolate_RTK()
 'Interpolate RTK X and Y based on linear offset from sonar X and Y
