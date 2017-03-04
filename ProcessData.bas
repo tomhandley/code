@@ -1,4 +1,4 @@
-Attribute VB_Name = "ProcessData"
+Attribute VB_Name = "process_sonar"
 Option Explicit
 
 Dim basepath, path, record As String  'path to R000XX_Final_Template, path to record, and record name
@@ -6,8 +6,8 @@ Dim fileprompt As VbMsgBoxResult
 Dim mybook As Workbook  '000XX_Final_Template workbook path
 Dim row As Long  'Row counter
 Dim seconds As Long  'Counts number of full seconds in sonar file
-Dim DEfile As String  'file path to Data_explorer index file
-Dim RTKfile As String  'file path to RTK data file
+Dim DE_file As String  'file path to Data_explorer index file
+Dim rtk_file As String  'file path to RTK data file
 Const tlen = 0.114  'Transducer length from center of mounting pole to sonar projector
 'Set worksheet columns for input and output
 'Const sonar_time = 1, sonar_east = 2, sonar_north = 3, sonar_depth = 4, sonar_cog = 5
@@ -23,8 +23,6 @@ Private Type linear  'Data type to store linear regression values
 End Type
 
 Sub assembleXYZ()
-Attribute assembleXYZ.VB_Description = "Process data from R000XX.DAT, R000XX.DAT.XYZ.csv and RTK files, interpolate missing data, smooth elevation and export bathymetry to R000XX.csv"
-Attribute assembleXYZ.VB_ProcData.VB_Invoke_Func = "D\n14"
 ' Process sonar, navigation and RTK data and export to csv
 '
 ' ****Functions****
@@ -106,14 +104,14 @@ Dim IsFile As Boolean
     sonar_to_combo
 
 'Import pertinent RTK data to RTK worksheet and insert missing data lines
-    RTK_import Cells(2, 2), Cells(seconds + 1, 2)
+    rtk_import Cells(2, 2), Cells(seconds + 1, 2)
     If fileprompt = vbCancel Then Exit Sub
 
 'Extract RTK data to Combo sheet
-    RTK_to_combo
+    rtk_to_combo
     
 'Interpolate gaps in RTK data
-    interpolate_RTK
+    interpolate_rtk
 
 'Smooth RTK elevation points
     critical
@@ -169,7 +167,7 @@ Dim SaveOn As VbMsgBoxResult
 End Sub
 
 Private Sub IO_defaults(Optional IOtype As String = "read")
-'Read/write last used record, DEfile, and RTKfile to/from R000XX_defaults.txt
+'Read/write last used record, DE_file, and rtk_file to/from R000XX_defaults.txt
 Dim f As Integer  'File index number
     f = FreeFile
     ChDir (path) 'Set default path
@@ -178,23 +176,23 @@ Dim f As Integer  'File index number
         Open "R000XX_defaults.txt" For Input As #f
         If Err.Number <> 0 Then
             record = "na"
-            DEfile = "na"
-            RTKfile = "na"
+            DE_file = "na"
+            rtk_file = "na"
             Exit Sub
         End If
         On Error GoTo 0  'Reset error handling
         Input #f, record
         Input #f, path
-        Input #f, DEfile
-        Input #f, RTKfile
+        Input #f, DE_file
+        Input #f, rtk_file
         Close #f
     Else  'Overwrite defaults file
         ChDir (basepath)  'Save in initial location
         Open "R000XX_defaults.txt" For Output As #f
         Write #f, record
         Write #f, path
-        Write #f, DEfile
-        Write #f, RTKfile
+        Write #f, DE_file
+        Write #f, rtk_file
         Close #f
     End If
 End Sub
@@ -208,8 +206,8 @@ Private Sub sonar_import()
 Dim idx_data() As Byte  'holds binary data from IDX file
 Dim f As Integer  'file index number
 Dim fLen As Long  'length of IDX file in bytes
-Dim DEbook As Workbook  'Data Explorer workbook
-Dim DATbook As Workbook  'R000XX.DAT.XYZ.csv path
+Dim DE_book As Workbook  'Data Explorer workbook
+Dim dat_book As Workbook  'R000XX.DAT.XYZ.csv path
 Dim fulldate As Double  'Initial datetime value (days since 1900 + hr/24 + min/60 + sec/3600 + ms/3600/1000)
 Dim utc_shift As Integer  'Value to shift sonar times forward/back to match RTK times (UTC)
     'For Pacific time, use 8 for records during PST (winter Nov-Mar) and 7 during PDT (summer Mar-Nov)
@@ -224,39 +222,39 @@ Dim cog As Double  'Course over ground
     Get f, , idx_data
     Close f
 
-'Choose data explorer file (DEfile) path
-    fileprompt = MsgBox("Use default Data Explorer file path? (" & DEfile & ")", vbYesNoCancel, "Data Explorer source")
+'Choose data explorer file (DE_file) path
+    fileprompt = MsgBox("Use default Data Explorer file path? (" & DE_file & ")", vbYesNoCancel, "Data Explorer source")
     If fileprompt = vbCancel Then
         Exit Sub
     Else
         If fileprompt = vbYes Then
-            If DEfile = "na" Then
+            If DE_file = "na" Then
                 MsgBox "Defaults file not found!" & vbCrLf & "Open file from list.", vbCritical, "File read error!"
             Else
                 Application.ScreenUpdating = False
                 On Error Resume Next  'Check that file opens without errors
-                Set DEbook = Workbooks.Open(Filename:=DEfile, ReadOnly:=True)
+                Set DE_book = Workbooks.Open(Filename:=DE_file, ReadOnly:=True)
                 If Err.Number <> 0 Then
                     MsgBox "Default data explorer file not found!", vbCritical, "Invalid file path!"
-                    DEfile = "na"
+                    DE_file = "na"
                 End If
                 On Error GoTo 0  'Reset error handling
             End If
         Else
-            DEfile = "na"
+            DE_file = "na"
         End If
     End If
-    If DEfile = "na" Then
-    'Select DEfile from explorer
+    If DE_file = "na" Then
+    'Select DE_file from explorer
         ChDir (path) 'Set default path
-        DEfile = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select data explorer file")
+        DE_file = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select data explorer file")
         Application.ScreenUpdating = False
-        Set DEbook = Workbooks.Open(Filename:=DEfile, ReadOnly:=True)
+        Set DE_book = Workbooks.Open(Filename:=DE_file, ReadOnly:=True)
     End If
    
 'Read data and close file
-    row = WorksheetFunction.Match(Val(Right(record, 5)), DEbook.Worksheets(1).Range("D2:D400"), 0) + 1  'Find record number in DEbook
-    fulldate = DEbook.Worksheets(1).Cells(row, 1)  'Initial date from DEbook
+    row = WorksheetFunction.Match(Val(Right(record, 5)), DE_book.Worksheets(1).Range("D2:D400"), 0) + 1  'Find record number in DE_book
+    fulldate = DE_book.Worksheets(1).Cells(row, 1)  'Initial date from DE_book
     If Month(fulldate) > 2 And Month(fulldate) < 11 Then
         utc_shift = 7
     Else
@@ -266,17 +264,17 @@ Dim cog As Double  'Course over ground
     If fileprompt = vbNo Then
         MsgBox "Set UTC time offset for date of data collection (" & Month(fulldate) & "/" & Day(fulldate) & "/" & Year(fulldate) & "). Set the offset to 7 for Pacific Standard Time (winter months) or 8 for Pacific Daylight Time (summer months).", vbCritical, "Set UTC offset"
     End If
-    fulldate = fulldate + DEbook.Worksheets(1).Cells(row, 6) + utc_shift / 24  'Shift times forward or back for UTC correction
-    DEbook.Close
-    Set DATbook = Workbooks.Open(Filename:=path & record & ".DAT.XYZ.csv", ReadOnly:=True)
+    fulldate = fulldate + DE_book.Worksheets(1).Cells(row, 6) + utc_shift / 24  'Shift times forward or back for UTC correction
+    DE_book.Close
+    Set dat_book = Workbooks.Open(Filename:=path & record & ".DAT.XYZ.csv", ReadOnly:=True)
     mybook.Worksheets("Sonar").Activate
     Range("A2").Select
     For row = 0 To fLen \ 8 - 1  'Backslash operator is integer division
         'First 4 bytes of each 8-byte record hold time stamp info
         Cells(row + 2, 1) = fulldate + (idx_data(row * 8 + 2) * 65536 + idx_data(row * 8 + 3) * CLng(256) + idx_data(row * 8 + 4)) / 24 / 3600 / 1000
     Next row
-    DATbook.Worksheets(1).Range("A2:C" & row + 1).Copy Destination:=Range("B2")  'Copy XYZ data from DATbook to Sonar sheet
-    DATbook.Close
+    dat_book.Worksheets(1).Range("A2:C" & row + 1).Copy Destination:=Range("B2")  'Copy XYZ data from dat_book to Sonar sheet
+    dat_book.Close
     Application.ScreenUpdating = True
 
 'Calculate Course over ground (COG)
@@ -465,11 +463,11 @@ ReDim xval(1 To n)
 
 End Function
 
-Private Sub RTK_import(date1 As Date, date2 As Date)
-'Import RTK data to RTK worksheet, delete duplicate entries, and insert missing rows
+Private Sub rtk_import(date1 As Date, date2 As Date)
+'Import rtk data to rtk worksheet, delete duplicate entries, and insert missing rows
 Dim rng As Range
-Dim RTKbook As Workbook
-Dim RTKstart, RTKend As Long  'Starting and ending row numbers in RTKbook to copy over
+Dim rtk_book As Workbook
+Dim rtk_start, rtk_end As Long  'Starting and ending row numbers in rtk_book to copy over
 Dim dt As Long
 
 'Clear anything past header row on Worksheets("RTK")
@@ -477,51 +475,52 @@ Dim dt As Long
     Set rng = rng.Offset(1, 0).Resize(rng.Rows.count - 1)
     rng.ClearContents
 
-'Choose RTK file path
-    fileprompt = MsgBox("Use default RTK data file path? (" & RTKfile & ")", vbYesNoCancel, "RTK data source")
+'Choose rtk file path
+    fileprompt = MsgBox("Use default RTK data file path? (" & rtk_file & ")", vbYesNoCancel, "RTK data source")
     If fileprompt = vbCancel Then
         Exit Sub
     Else
         If fileprompt = vbYes Then
-            If RTKfile = "na" Then
+            If rtk_file = "na" Then
                 MsgBox "Defaults file not found!" & vbCrLf & "Open file from list.", vbCritical, "File read error!"
             Else
                 Application.ScreenUpdating = False
                 On Error Resume Next  'Check that file opens without errors
-                Set RTKbook = Workbooks.Open(Filename:=RTKfile, ReadOnly:=True)
+                Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
                 If Err.Number <> 0 Then
                     MsgBox "Default RTK data file not found!", vbCritical, "Invalid file path!"
-                    RTKfile = "na"
+                    rtk_file = "na"
                     Application.ScreenUpdating = True
                 End If
                 On Error GoTo 0  'Reset error handling
             End If
         Else
-            RTKfile = "na"
+            rtk_file = "na"
         End If
     End If
-    If RTKfile = "na" Then
-    'Select RTKfile from explorer
+    If rtk_file = "na" Then
+    'Select rtk_file from explorer
         ChDir (path) 'Set default path
-        RTKfile = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select RTK data file")
+        rtk_file = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select RTK data file")
         Application.ScreenUpdating = False
-        Set RTKbook = Workbooks.Open(Filename:=RTKfile, ReadOnly:=True)
+        Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
     End If
 
 'Import RTK data and close file
-    RTKstart = find_row(date1, "initial")
-    RTKend = find_row(date2, "final")
-    'Copy data from RTKbook
-    mybook.rtk.Range("A2:Q" & 2 + RTKend - RTKstart).Value = RTKbook.Worksheets(1).Range("A" & RTKstart & ":Q" & RTKend).Value
+    rtk_book.Worksheets(1).Select
+    rtk_start = find_row(date1, "initial")
+    rtk_end = find_row(date2, "final")
+    'Copy data from rtk_book
+    mybook.Worksheets("RTK").Range("A2:Q" & 2 + rtk_end - rtk_start).Value = rtk_book.Worksheets(1).Range("A" & rtk_start & ":Q" & rtk_end).Value
     Application.DisplayAlerts = False  'Prevent "Save changes" dialog
-    RTKbook.Close
+    rtk_book.Close
     Application.DisplayAlerts = True
-    mybook.rtk.Activate
+    mybook.Worksheets("RTK").Activate
     Application.ScreenUpdating = True
 
 End Sub
 
-Private Sub RTK_to_combo()
+Private Sub rtk_to_combo()
 'Write RTK data to Combo worksheet
 'Assumes RTK data are already adjusted to XYZ position at base of pipe and level of sonar emitter
 Dim start As Long
@@ -529,23 +528,20 @@ Dim cog As Double  'Course over ground
 Dim Xrtk, Yrtk As Double  'X and Y position
 Dim i As Long  'Counter
 Dim r As linear  'Store regression values
-Const maxZ = 0.03  'Maximum allowable RTK precision in Z; 3 cm based on equipment limitations
-Const maxXY = 0.15  'Maximum allowable RTK precision in XY; based on limiting overall uncertainty
+Const max_z = 0.03  'Maximum allowable RTK precision in Z; 3 cm based on equipment limitations
+Const max_xy = 0.15  'Maximum allowable RTK precision in XY; based on limiting overall uncertainty
 'XXX NEW VARS
 Dim rtk_row As Long
 Dim dt As Long
 Dim count As Long
 Dim combo_row As Long
-Dim maxrow As Long
 Dim last As Long
 Dim rtk_data() As Variant
 
-mybook.combo.Activate
+combo.Activate
 
 'Import data from RTK sheet, averaging records and leaving gaps as needed
     combo_row = 2
-    maxrow = 30
-'    rtk_row = timer(Cells(2, 2), rtk.Cells(2, 3)) 'Set start row in RTK sheet to offset if there is an initial gap in data
     'Initialize starting rtk row to offset if there is an initial gap in data
     rtk_row = 2
     Do While rtk.Cells(rtk_row, 3) < Cells(2, 2)
@@ -554,17 +550,8 @@ mybook.combo.Activate
     
     'Import data from RTK sheet
     start = Round((Range("B2") - Worksheets("RTK").Range("C2")) * 24 * 3600, 0) + 1
-    Do While combo_row <= last
-        cog = 9999  'Initialize to invalid value to test for changes
-        If combo_row + start < 2 Then
-        'RTK record starts later than sonar, can't interpolate
-            Cells(combo_row + 1, 12) = Cells(combo_row + 1, 2) 'No matching RTK time, use time from Combo sheet
-            Cells(combo_row + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
-            Cells(combo_row + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
-            Cells(combo_row + 1, 22) = "None,Extrapolated"  'RTK Solution Type
-        Else
-        
-        dt = timer(rtk.Cells(rtk_row, 3), rtk.Cells(rtk_row + 1, 3))
+    Do While combo_row <= seconds + 1
+        dt = timer(rtk.Cells(rtk_row + 1, 3), rtk.Cells(rtk_row, 3))
         'Three cases:
         'dt > 1 -- fill missing times and blank details on combo (horiz, vert precision, soln type) for later interpolation
         'dt = 0 -- import average of multiple records per second, ignoring duplicate positions
@@ -574,15 +561,28 @@ mybook.combo.Activate
         'check for dt > 1, meaning there is a gap in the data
         If dt > 1 Then 'fill gap in rtk record with basic data for later interpolation
 'XXXX            If dt < 7200 Then  'No more than two hour gap
-            If combo_row + dt - 1 < maxrow Then
+'XXXX This isn't working right
+'for a gap in data, it should copy the info at rtk_row, then skip rows until the next record
+'this currently NEVER copies the valid rtk data, just skips dt - 1 rows
+'CONSIDER, this evaluates dt for the diff between two rtk records.
+'Maybe dt should be the diff between rtk_row and combo_row times,
+'and a new variable, gap, should count the gap between rtk records
+'So, if dt=0, move on to copy averaged data
+'calculate rtk gap
+'   if gap = 0, average the data
+'   if gap = 1, copy the row directly
+'   if gap > 1, copy the row directly, then fill blanks with sonar data
+            If combo_row + dt - 1 <= seconds + 1 Then
                 last = dt - 1
-            Else: last = maxrow
+            Else: last = seconds - combo_row + 1
             End If
-            For i = 1 To last
+                        
+            For i = 0 To last - 1
                 'fill basic rtk info for missing data
-                Cells(combo_row + i, 12) = Cells(combo_row + i - 1, 3) + 1 / 24 / 3600 'rtk time
+                Cells(combo_row + i, 12) = Cells(combo_row + i, 2) 'rtk time
             Next i
             combo_row = combo_row + dt
+            rtk_row = rtk_row + 1
         Else 'dt = 0 or 1
             If rtk.Cells(rtk_row + 1, 4) = rtk.Cells(rtk_row, 4) And rtk.Cells(rtk_row + 1, 5) = rtk.Cells(rtk_row, 5) Then  'no change in position
                 rtk_row = rtk_row + 1 'skip over duplicate position
@@ -640,17 +640,17 @@ mybook.combo.Activate
 '    If i + start < 2 Then
 '    'RTK record starts later than sonar, can't interpolate
 '        Cells(i + 1, 12) = Cells(i + 1, 2) 'No matching RTK time, use time from Combo sheet
-'        Cells(i + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
-'        Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
+'        Cells(i + 1, 20) = "> " & Format(Str(max_xy), "0.00")  'StDev_XY
+'        Cells(i + 1, 21) = max_z  'StDev_Z set to max for later smoothing
 '        Cells(i + 1, 22) = "None,Extrapolated"  'RTK Solution Type
 '    Else
 '        Cells(i + 1, 12) = Worksheets("RTK").Cells(i + start, 3)  'RTK Time
-'        If Worksheets("RTK").Cells(i + start, 7) <= maxXY And Worksheets("RTK").Cells(i + start, 1) <> "" Then
+'        If Worksheets("RTK").Cells(i + start, 7) <= max_xy And Worksheets("RTK").Cells(i + start, 1) <> "" Then
 '        'Horizontal precision OK
 '            Cells(i + 1, 11) = Worksheets("RTK").Cells(i + start, 2)  'Point_ID
 '            Cells(i + 1, 20) = Worksheets("RTK").Cells(i + start, 7)  'StDev_XY
 '            'Calculate COG_RTK, Northing and Easting
-'            If Worksheets("RTK").Cells(i + start + 1, 7) <= maxXY And Worksheets("RTK").Cells(i + start + 1, 1) <> "" Then
+'            If Worksheets("RTK").Cells(i + start + 1, 7) <= max_xy And Worksheets("RTK").Cells(i + start + 1, 1) <> "" Then
 '            'Next horizontal precision is OK: calculate COG, X and Y between two valid points
 '            'cog = mod(degrees(atan2(x2 - x1, y2 - y1)) + 270, 360)
 '                On Error Resume Next  'No change in position results in division by zero error (Err.Number = 11)
@@ -677,20 +677,20 @@ mybook.combo.Activate
 '                Cells(i + 1, 14) = Xrtk  'Easting
 '                Cells(i + 1, 13) = Yrtk  'Northing
 '            End If
-'            If Worksheets("RTK").Cells(i + start, 8) <= maxZ Then
+'            If Worksheets("RTK").Cells(i + start, 8) <= max_z Then
 '            'Horizontal and vertical precision OK
 '                Cells(i + 1, 16) = Worksheets("RTK").Cells(i + start, 6)  'Elev
 '                Cells(i + 1, 21) = Worksheets("RTK").Cells(i + start, 8)  'StDev_Z
 '                Cells(i + 1, 22) = Worksheets("RTK").Cells(i + start, 17)  'RTK Solution Type
 '            Else
 '            'Only horizontal precision OK
-'                Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
+'                Cells(i + 1, 21) = max_z  'StDev_Z set to max for later smoothing
 '                Cells(i + 1, 22) = "Float,Horizontal"  'RTK Solution Type
 '            End If
 '        Else
 '        'Neither horizontal nor vertial precision OK
-'            Cells(i + 1, 20) = "> " & Format(Str(maxXY), "0.00")  'StDev_XY
-'            Cells(i + 1, 21) = maxZ  'StDev_Z set to max for later smoothing
+'            Cells(i + 1, 20) = "> " & Format(Str(max_xy), "0.00")  'StDev_XY
+'            Cells(i + 1, 21) = max_z  'StDev_Z set to max for later smoothing
 '            Cells(i + 1, 22) = "None,Interpolated"  'RTK Solution Type
 '        End If
 '    End If
@@ -784,10 +784,10 @@ Private Function find_row(dateval As Date, matchtype As String) As Long
 'RTK data file must have been activated by calling sub
 'matchtype should be passed as "initial" or "final"
 Dim step, index As Long
-Dim lastRow As Long
+Dim last_row As Long
 Dim dt As Integer
-    lastRow = ActiveSheet.Cells(Rows.count, "A").End(xlUp).row - 1
-    index = Int(lastRow / 2) 'start at midpoint
+    last_row = ActiveSheet.Cells(Rows.count, "A").End(xlUp).row - 1
+    index = Int(last_row / 2) 'start at midpoint
     step = index 'initial step will become half the size of index in loop below
     Do Until Abs(dateval - Cells(index + 1, 3)) < 1 / 48 / 3600 Or Abs(step) = 1
         step = Abs(step)  'reset step to positive after each iteration
@@ -824,17 +824,25 @@ Dim dt As Integer
                 End If
             End If
         End If
+    Else 'check for repeating values of same second (can occur when rtk collects data @ 1/m)
+        If matchtype = "initial" Then
+            step = -1
+        Else: step = 1
+        End If
+        Do While Abs(dateval - Cells(index + step + 1, 3)) < 1 / 48 / 3600
+            index = index + step
+        Loop
     End If
     find_row = index + 1  'set value to actual worksheet row number
 End Function
 
-Private Sub interpolate_RTK()
+Private Sub interpolate_rtk()
 'Interpolate RTK X and Y based on linear offset from sonar X and Y
 '  with RTK Z interpolated linearly
 'X and Y positions and offsets already corrected for transducer position based on COG
 '  so interpolated positions do not need to be corrected again
 Dim count As Long  'Number of blanks to interpolate or extrapolate
-Dim RTKrows As Long  'Number of rows in RTK sheet
+Dim rtk_rows As Long  'Number of rows in RTK sheet
 Dim incX, incY, incZ As Double  'Increments to offset X, Y and Z for interpolation
 Dim i, j As Long  'Counter
 Dim span As Long  'Number of seconds between known RTK points
@@ -925,11 +933,11 @@ Do While Cells(i + 1, 1) <> ""  'Index isn't blank
         Loop
         If count = seconds Then  'No RTK elevation for whole record
             'Check starting RTK values
-            RTKrows = Worksheets("RTK").Cells(Rows.count, "B").End(xlUp).row  'Last used row in RTK worksheet
-            span = timer(Worksheets("RTK").Cells(RTKrows, 3), Worksheets("RTK").Cells(2, 3))
+            rtk_rows = Worksheets("RTK").Cells(Rows.count, "B").End(xlUp).row  'Last used row in RTK worksheet
+            span = timer(Worksheets("RTK").Cells(rtk_rows, 3), Worksheets("RTK").Cells(2, 3))
             If span <= 7200 Then  'Less than two hours between known RTK end points
                 warn(4) = True
-                zr.b = (Worksheets("RTK").Cells(RTKrows, 6) - Worksheets("RTK").Cells(2, 6)) / span
+                zr.b = (Worksheets("RTK").Cells(rtk_rows, 6) - Worksheets("RTK").Cells(2, 6)) / span
                 zr.n = CInt(timer(Cells(2, 12), Worksheets("RTK").Cells(2, 3)))
                 Cells(2, 16) = Worksheets("RTK").Cells(2, 6) + zr.b * (zr.n + 1)  'First elevation
                 For j = 2 To seconds
@@ -1151,3 +1159,7 @@ Private Sub save_files()
         Workbooks.Open Filename:=basepath & "R000XX_Final_Template.xlsx"
     Application.DisplayAlerts = True
 End Sub
+
+
+
+
