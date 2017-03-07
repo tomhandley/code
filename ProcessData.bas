@@ -101,6 +101,7 @@ Dim rng As Range
         Set rng = Sheets(ws).UsedRange
         Set rng = rng.Offset(1, 0).Resize(rng.Rows.count - 1)
         rng.ClearContents
+        rng.Interior.ColorIndex = 0
     Next ws
 
 'Import sonar ping time stamps from IDX file
@@ -614,6 +615,12 @@ combo.Activate
             End If
             count = 1 'use for incrementing combo_row
         Else 'dt > 0 --> gap in rtk record, fill with time and basic "no data" info for later interpolation
+'XXXX instead of filling gaps with max_xy and max_z, determine a reasonable damping count and interpolate to the max
+'XXXX for example, a gap of one or two would be filled by straight interpolation, and considered fixed (or same as end type)
+'XXXX a gap of three would begin to show some damping influence where it approaches the max at the midpoint
+'XXXX a gap of seven would hit the max at the midpoint and interpolate from both ends to that point, the first two on each side stay
+'XXXX fixed type, the middle three are none
+'XXXX because both stdev endpoints are needed before interpolating, just leave them blank here and move the rest to interpolate_rtk
             count = WorksheetFunction.Min(dt, seconds + 2 - combo_row) 'limit data to seconds + 1 row
             Cells(combo_row, 2).Resize(count).Copy Cells(combo_row, 12)
             Cells(combo_row, 20).Resize(count) = "> " & Format(Str(max_xy), "0.00") 'stdev_xy
@@ -711,21 +718,22 @@ Dim yr As linear 'y-offset regression
 Dim xmean As Double 'mean of adjacent x-offsets in window size
 Dim ymean As Double 'mean of adjacent y-offsets in window size
 Dim j As Long
-Dim normLog As Single 'used for logarithmic damping of slope extrapolation
+Dim damping As Single 'used for logarithmic damping of slope extrapolation
+Dim dt As Long
 Dim rtk_rows As Long
 Dim span As Long 'number of seconds between known rtk points
 Dim zr As linear 'elevation regression
 Dim warning As String 'warning message for output
-Const damper = 7 'number of seconds to dampen x-, y- and z-offset trends on log scale before they reach zero
+Const damping_interval = 7 'number of seconds to dampen x-, y- and z-offset trends on log scale before they reach zero
 Const window = 100 'number of seconds to average offsets forward and backward to find mean
 ReDim warn(1 To 7)
 
 'Interpolate northing and easting
 i = 2
 Do While i <= seconds + 1
-    If Cells(i + count, 8) = "" Then 'x-offset is blank
+    If Cells(i, 8) = "" Then 'x-offset is blank
         'count blanks
-        count = 0
+        count = 1
         Do While Cells(i + count, 8) = "" And i + count <= seconds + 1
             count = count + 1
         Loop
@@ -733,7 +741,7 @@ Do While i <= seconds + 1
             Cells(2, 4).Resize(count).Copy Cells(2, 14) 'copy x from sonar
             Cells(2, 5).Resize(count).Copy Cells(2, 13) 'copy y from sonar
             warn(1) = True
-        ElseIf i = 2 Or i + count = seconds + 1 Then 'initial or terminal gap in rtk
+        ElseIf i = 2 Or i + count - 1 = seconds + 1 Then 'initial or terminal gap in rtk
             'find regression slope of x- and y-offsets from known points and produce a smooth curve towards the average
             If i = 2 Then 'initial gap
                 dir = -1
@@ -741,7 +749,7 @@ Do While i <= seconds + 1
                 warn(2) = True
             Else 'terminal gap
                 dir = 1
-                target = i
+                target = i - 1
                 warn(3) = True
             End If
             xr = regress(target, 8, 6, dir, 11) 'regression of x-offset through 6 points with valid Point_ID
@@ -750,14 +758,14 @@ Do While i <= seconds + 1
             ymean = midmean(window, target, 9) 'average y-offset within +/- <window> values
             For j = 1 To count
             'calculate x- and y-offsets
-                If j < damper + 2 Then
-                    normLog = WorksheetFunction.Log(damper - j + 2, damper + 1)
-                    Cells(target + j * dir, 8) = Cells(target + (j - 1) * dir, 8) + xr.b * normLog
-                    Cells(target + j * dir, 9) = Cells(target + (j - 1) * dir, 9) + yr.b * normLog
+                If j < damping_interval + 2 Then
+                    damping = WorksheetFunction.Log(damping_interval - j + 2, damping_interval + 1)
+                    Cells(target + j * dir, 8) = Cells(target + (j - 1) * dir, 8) + xr.b * damping
+                    Cells(target + j * dir, 9) = Cells(target + (j - 1) * dir, 9) + yr.b * damping
                 Else
-                    If j <= damper * 2 Then normLog = WorksheetFunction.Log(j - damper, damper + 1) Else normLog = 1
-                    Cells(target + j * dir, 8) = Cells(target + (j - 1) * dir, 8) + (xmean - Cells(target + (j - 1) * dir, 8)) / damper * normLog
-                    Cells(target + j * dir, 9) = Cells(target + (j - 1) * dir, 9) + (ymean - Cells(target + (j - 1) * dir, 9)) / damper * normLog
+                    If j <= damping_interval * 2 Then damping = WorksheetFunction.Log(j - damping_interval, damping_interval + 1) Else damping = 1
+                    Cells(target + j * dir, 8) = Cells(target + (j - 1) * dir, 8) + (xmean - Cells(target + (j - 1) * dir, 8)) / damping_interval * damping
+                    Cells(target + j * dir, 9) = Cells(target + (j - 1) * dir, 9) + (ymean - Cells(target + (j - 1) * dir, 9)) / damping_interval * damping
                 End If
             Next j
         Else 'middle gap--interpolate between two valid values
@@ -774,7 +782,7 @@ Do While i <= seconds + 1
         Cells(i, 14).Resize(count).FormulaR1C1 = "=RC[-10] + RC[-6]" 'easting
         Cells(i, 8).Resize(count, 2).Interior.Color = 49407
         Cells(i, 13).Resize(count, 2).Interior.Color = 49407
-        i = i + count
+        i = i + count + 1
     Else
         i = i + 1
     End If
@@ -782,10 +790,10 @@ Loop
 
 'Interpolate Elevation gaps
 i = 2
-Do While i <= seconds + 1 'index isn't blank
+Do While i <= seconds + 1
     If Cells(i, 16) = "" Then 'elevation is blank
         'count blanks
-        count = 0
+        count = 1
         Do While Cells(i + count, 16) = "" And i + count <= seconds + 1
             count = count + 1
         Loop
@@ -804,18 +812,28 @@ Do While i <= seconds + 1 'index isn't blank
             Else
                 warn(5) = True
             End If
-        ElseIf i = 2 Or i + count = seconds + 1 Then 'initial or terminal gap in RTK
+        ElseIf i = 2 Then 'initial gap in rtk
             'use the regression slope of elevation to extrapolate
-            If i = 2 Then 'initial gap
-                dir = -1
-                target = count + 2
+            dir = -1
+            target = count + 2
+            dt = timer(Cells(target, 12), rtk.Cells(2, 3))
+            If dt <= 10 Then 'set slope to interpolate from first value in rtk sheet
+                zr.b = (rtk.Cells(2, 6) - Cells(target, 16)) / dt
+            Else 'calculate elevation regression and set slope to extrapolate
+                zr = regress(target, 16, 300, dir, 16) 'regression through 300 non-blank points
                 warn(6) = True
-            Else 'terminal gap
-                dir = 1
-                target = i - 1
+            End If
+        ElseIf i + count - 1 = seconds + 1 Then 'terminal gap
+            dir = 1
+            target = i - 1
+            rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
+            dt = timer(rtk.Cells(rtk_rows, 3), Cells(i - 1, 12))
+            If dt <= 10 Then 'set slope to interpolate to last value in rtk sheet
+                zr.b = (rtk.Cells(rtk_rows, 6) - Cells(i - 1, 16)) / dt
+            Else 'calculate elevation regression and set slope to extrapolate
+                zr = regress(target, 16, 300, dir, 16) 'regression through 300 non-blank points
                 warn(7) = True
             End If
-            zr = regress(target, 16, 300, dir, 16) 'regression of elevation through 300 non-blank points
         Else 'middle gap--interpolate between two valid values
             dir = 1
             target = i - 1
@@ -826,11 +844,12 @@ Do While i <= seconds + 1 'index isn't blank
         Next j
         'highlight records with interpolated data in orange
         Cells(i, 16).Resize(count).Interior.Color = 49407
-        i = i + count
+        i = i + count + 1
     Else
         i = i + 1
     End If
 Loop
+
         
 'Output warnings
     warning = ""
