@@ -11,6 +11,8 @@ Dim seconds As Long 'counts number of full seconds in sonar file
 Dim DE_file As String 'file path to data_explorer index file
 Dim rtk_file As String 'file path to rtk data file
 Const tlen = 0.114 'transducer length from center of mounting pole to sonar projector
+Const max_z = 0.03 'maximum allowable rtk precision in z; 3 cm based on equipment limitations
+Const max_xy = 0.15 'maximum allowable rtk precision in xy; based on limiting overall uncertainty
 'Set worksheet columns for input and output
 'Const sonar_time = 1, sonar_east = 2, sonar_north = 3, sonar_depth = 4, sonar_cog = 5
 'Const rtk_baseid = 1, rtk_pointid = 2, rtk_time = 3, rtk_north = 4, rtk_east = 5, rtk_elev = 6, rtk_horiz_prec = 7, rtk_vert_prec = 8, rtk_soln_type = 17
@@ -405,12 +407,13 @@ Private Function regress(yrow As Long, ycol As Integer, n As Integer, Optional d
 '    End Type
 '
 Dim count As Integer
-Dim x As Integer
+Dim x As Integer 'index value
 Dim i As Integer
 Dim y() As Double 'values for regression
 Dim xval() As Double 'xval holds indices
-Dim ybar As Double 'average values for x
-Dim xbar As Double 'average values for y
+Dim ybar As Double 'average values for y
+Dim xbar As Double 'average values for x
+Dim get_data As Boolean
 ReDim y(1 To n)
 ReDim xval(1 To n)
 
@@ -435,16 +438,16 @@ ReDim xval(1 To n)
     If maxrow = 0 Then maxrow = seconds + 1 'set to default
 
 'Gather data for regression
+    get_data = True
     Do Until count = n Or yrow + x > maxrow Or yrow + x < 2
         If check_col > 0 Then
             If Cells(yrow + x, check_col) <> "" And Cells(yrow + x, check_col).Interior.Color <> 49407 Then
             'interpolated cells are color 49407
-                count = count + 1
-                y(count) = Cells(yrow + x, ycol)
-                ybar = ybar + y(count)
-                xval(count) = Abs(x) + 1
+                get_data = True
+            Else: get_data = False
             End If
-        Else
+        End If
+        If get_data Then
             count = count + 1
             y(count) = Cells(yrow + x, ycol)
             ybar = ybar + y(count)
@@ -469,7 +472,7 @@ ReDim xval(1 To n)
         .n = Abs(x) 'index of independent variable x
         For i = 1 To count
             .b = .b + (.n - xval(i) + 1 - xbar) * (y(i) - ybar) 'sum numerator
-            .a = .a + (.n - xval(i) + 1 - xbar) ^ 2 'sum denomenator
+            .a = .a + (.n - xval(i) + 1 - xbar) ^ 2 'sum denominator
         Next i
         'set final values
         .b = .b / .a 'slope
@@ -543,8 +546,6 @@ Dim r As linear 'store regression values
 Dim rtk_x As Double
 Dim rtk_y As Double
 Dim increment As Long
-Const max_z = 0.03 'maximum allowable rtk precision in z; 3 cm based on equipment limitations
-Const max_xy = 0.15 'maximum allowable rtk precision in xy; based on limiting overall uncertainty
 
 combo.Activate
 'Import data from rtk sheet, averaging records and leaving gaps as needed
@@ -615,17 +616,12 @@ combo.Activate
             End If
             count = 1 'use for incrementing combo_row
         Else 'dt > 0 --> gap in rtk record, fill with time and basic "no data" info for later interpolation
-'XXXX instead of filling gaps with max_xy and max_z, determine a reasonable damping count and interpolate to the max
-'XXXX for example, a gap of one or two would be filled by straight interpolation, and considered fixed (or same as end type)
-'XXXX a gap of three would begin to show some damping influence where it approaches the max at the midpoint
-'XXXX a gap of seven would hit the max at the midpoint and interpolate from both ends to that point, the first two on each side stay
-'XXXX fixed type, the middle three are none
-'XXXX because both stdev endpoints are needed before interpolating, just leave them blank here and move the rest to interpolate_rtk
             count = WorksheetFunction.Min(dt, seconds + 2 - combo_row) 'limit data to seconds + 1 row
             Cells(combo_row, 2).Resize(count).Copy Cells(combo_row, 12)
-            Cells(combo_row, 20).Resize(count) = "> " & Format(Str(max_xy), "0.00") 'stdev_xy
-            Cells(combo_row, 21).Resize(count) = max_z 'stdev_z set to max for later smoothing
-            Cells(combo_row, 22).Resize(count) = "None,Interpolated" 'solution type
+'XXX LEAVE stdev_XX and soln type BLANK FOR INTERPOLATION
+'XXX            Cells(combo_row, 20).Resize(count) = "> " & Format(Str(max_xy), "0.00") 'stdev_xy
+'XXX            Cells(combo_row, 21).Resize(count) = max_z 'stdev_z set to max for later smoothing
+'XXX            Cells(combo_row, 22).Resize(count) = "None,Interpolated" 'solution type
         End If
         Cells(combo_row, 18).Resize(count).FormulaR1C1 = "=RC[-2] - RC[3]"  'min = elev - stdev_z
         Cells(combo_row, 19).Resize(count).FormulaR1C1 = "=RC[-3] + RC[2]"  'max = elev + stdev_z
@@ -718,11 +714,11 @@ Dim yr As linear 'y-offset regression
 Dim xmean As Double 'mean of adjacent x-offsets in window size
 Dim ymean As Double 'mean of adjacent y-offsets in window size
 Dim j As Long
+Dim warn_id As Integer
 Dim damping As Single 'used for logarithmic damping of slope extrapolation
-Dim dt As Long
-Dim rtk_rows As Long
-Dim span As Long 'number of seconds between known rtk points
-Dim zr As linear 'elevation regression
+'Dim dt As Long 'number of seconds between known rtk points
+'Dim rtk_rows As Long
+'Dim zr As linear 'elevation regression
 Dim warning As String 'warning message for output
 Const damping_interval = 7 'number of seconds to dampen x-, y- and z-offset trends on log scale before they reach zero
 Const window = 100 'number of seconds to average offsets forward and backward to find mean
@@ -788,67 +784,80 @@ Do While i <= seconds + 1
     End If
 Loop
 
-'Interpolate Elevation gaps
-i = 2
-Do While i <= seconds + 1
-    If Cells(i, 16) = "" Then 'elevation is blank
-        'count blanks
-        count = 1
-        Do While Cells(i + count, 16) = "" And i + count <= seconds + 1
-            count = count + 1
-        Loop
-        If count = seconds Then 'no rtk elevation for whole record
-            'check starting rtk values
-            rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
-            span = timer(rtk.Cells(rtk_rows, 3), rtk.Cells(2, 3))
-            If span <= 7200 Then 'less than two hours between known rtk end points
-                warn(4) = True
-                zr.b = (rtk.Cells(rtk_rows, 6) - rtk.Cells(2, 6)) / span
-                zr.n = CInt(timer(Cells(2, 12), rtk.Cells(2, 3)))
-                Cells(2, 16) = rtk.Cells(2, 6) + zr.b * (zr.n + 1) 'first elevation
-                For j = 2 To seconds
-                    Cells(j + 1, 16) = Cells(j, 16) + zr.b 'elevation
-                Next j
-            Else
-                warn(5) = True
-            End If
-        ElseIf i = 2 Then 'initial gap in rtk
-            'use the regression slope of elevation to extrapolate
-            dir = -1
-            target = count + 2
-            dt = timer(Cells(target, 12), rtk.Cells(2, 3))
-            If dt <= 10 Then 'set slope to interpolate from first value in rtk sheet
-                zr.b = (rtk.Cells(2, 6) - Cells(target, 16)) / dt
-            Else 'calculate elevation regression and set slope to extrapolate
-                zr = regress(target, 16, 300, dir, 16) 'regression through 300 non-blank points
-                warn(6) = True
-            End If
-        ElseIf i + count - 1 = seconds + 1 Then 'terminal gap
-            dir = 1
-            target = i - 1
-            rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
-            dt = timer(rtk.Cells(rtk_rows, 3), Cells(i - 1, 12))
-            If dt <= 10 Then 'set slope to interpolate to last value in rtk sheet
-                zr.b = (rtk.Cells(rtk_rows, 6) - Cells(i - 1, 16)) / dt
-            Else 'calculate elevation regression and set slope to extrapolate
-                zr = regress(target, 16, 300, dir, 16) 'regression through 300 non-blank points
-                warn(7) = True
-            End If
-        Else 'middle gap--interpolate between two valid values
-            dir = 1
-            target = i - 1
-            zr.b = (Cells(i + count, 16) - Cells(i - 1, 16)) / (count + 1) 'slope
-        End If
-        For j = 1 To count
-            Cells(target + j * dir, 16) = Cells(target + (j - 1) * dir, 16) + zr.b 'elev
-        Next j
-        'highlight records with interpolated data in orange
-        Cells(i, 16).Resize(count).Interior.Color = 49407
-        i = i + count + 1
-    Else
-        i = i + 1
-    End If
-Loop
+'Interpolate gaps in elevation, stdev_xy, and stdev_z
+'XXXX Need to debug damping in interp() for stdev_XX yet
+warn_id = interp(16, 6, 4)
+If warn_id = 5 Then
+    warn(6) = True
+    warn(7) = True
+ElseIf warn_id > 0 Then
+    warn(warn_id + 3) = True
+End If
+'XXX chnage damping_interval to 5
+warn_id = interp(20, 7, damping_interval, max_xy)
+warn_id = interp(21, 8, damping_interval, max_z)
+
+'XXX remove after debugging interp()
+'i = 2
+'Do While i <= seconds + 1
+'    If Cells(i, 16) = "" Then 'elevation is blank
+'        'count blanks
+'        count = 1
+'        Do While Cells(i + count, 16) = "" And i + count <= seconds + 1
+'            count = count + 1
+'        Loop
+'        If count = seconds Then 'no rtk elevation for whole record
+'            'check starting rtk values
+'            rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
+'            dt = timer(rtk.Cells(rtk_rows, 3), rtk.Cells(2, 3))
+'            If dt <= 7200 Then 'less than two hours between known rtk end points
+'                warn(4) = True
+'                zr.b = (rtk.Cells(rtk_rows, 6) - rtk.Cells(2, 6)) / dt
+'                zr.n = CInt(timer(Cells(2, 12), rtk.Cells(2, 3)))
+'                Cells(2, 16) = rtk.Cells(2, 6) + zr.b * (zr.n + 1) 'first elevation
+'                For j = 2 To seconds
+'                    Cells(j + 1, 16) = Cells(j, 16) + zr.b 'elevation
+'                Next j
+'            Else
+'                warn(5) = True
+'            End If
+'        ElseIf i = 2 Then 'initial gap in rtk
+'            'use the regression slope of elevation to extrapolate
+'            dir = -1
+'            target = count + 2
+'            dt = timer(Cells(target, 12), rtk.Cells(2, 3))
+'            If dt <= 10 Then 'set slope to interpolate from first value in rtk sheet
+'                zr.b = (rtk.Cells(2, 6) - Cells(target, 16)) / dt
+'            Else 'calculate elevation regression and set slope to extrapolate
+'                zr = regress(target, 16, 300, dir, 16) 'regression through 300 non-blank points
+'                warn(6) = True
+'            End If
+'        ElseIf i + count - 1 = seconds + 1 Then 'terminal gap
+'            dir = 1
+'            target = i - 1
+'            rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
+'            dt = timer(rtk.Cells(rtk_rows, 3), Cells(i - 1, 12))
+'            If dt <= 10 Then 'set slope to interpolate to last value in rtk sheet
+'                zr.b = (rtk.Cells(rtk_rows, 6) - Cells(i - 1, 16)) / dt
+'            Else 'calculate elevation regression and set slope to extrapolate
+'                zr = regress(target, 16, 300, dir, 16) 'regression through 300 non-blank points
+'                warn(7) = True
+'            End If
+'        Else 'middle gap--interpolate between two valid values
+'            dir = 1
+'            target = i - 1
+'            zr.b = (Cells(i + count, 16) - Cells(i - 1, 16)) / (count + 1) 'slope
+'        End If
+'        For j = 1 To count
+'            Cells(target + j * dir, 16) = Cells(target + (j - 1) * dir, 16) + zr.b 'elev
+'        Next j
+'        'highlight records with interpolated data in orange
+'        Cells(i, 16).Resize(count).Interior.Color = 49407
+'        i = i + count + 1
+'    Else
+'        i = i + 1
+'    End If
+'Loop
 
         
 'Output warnings
@@ -876,16 +885,139 @@ Loop
     
 End Sub
 
-Private Function midmean(maxcount As Integer, vrow, vcol As Long) As Double
-'Calculate average of maxcount values in column vcol both above and below row vrow
-Dim k, n1, n2 As Integer 'Counters
+Private Function interp(icol As Integer, rtk_col As Integer, damping_interval As Integer, Optional max_val As Single = 0) As Integer
+'Interpolate gaps in input column
+'Outputs an identifier depending on which data are missing
+'   0: all data present
+'   1: no data for whole record, interpolated between valid points
+'   2: no data for whole record, not interpolated
+'   3: initial gap
+'   4: terminal gap
+'   5: both initial and terminal gaps
+'icol is the column to fill gaps in the combo sheet
+'rtk_col is the column with matching data in the rtk sheet
+'damping_interval is the number of seconds to use log-dampened weighting of interpolated value before it reaches the max_val
+'max_val is a value, if any, that the column data should approach over the damping_interval number of seconds
 
+Dim warn_id As Integer 'function output
+Dim i As Long
+Dim count As Long
+Dim start_val As Double 'starting value for interpolation
+Dim rtk_rows As Long
+Dim dt As Long 'time difference in seconds
+Dim r As linear 'elevation regression
+Dim j As Long
+Dim dir As Integer 'direction of interpolation or extrapolation
+Dim target As Long 'start row for interpolation or extrapolation
+Dim d As Long
+Dim wi As Single 'log damping of standard interpolation weight vs max_val in average
+
+warn_id = 0
+i = 2
+Do While i <= seconds + 1
+    If Cells(i, icol) = "" Then 'icol data missing
+        'count blanks
+        count = 1
+        Do While Cells(i + count, icol) = "" And i + count <= seconds + 1
+            count = count + 1
+        Loop
+        start_val = 0
+        wi = 1 'weighting of interpolation defaults to 1
+        'set interpolation parameters
+        If count = seconds Then 'no data for whole record
+            'check starting rtk values
+            rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
+            dt = timer(rtk.Cells(rtk_rows, 3), rtk.Cells(2, 3))
+            If dt <= 7200 Then 'less than two hours between known rtk end points
+                warn_id = 1
+                r.b = (rtk.Cells(rtk_rows, rtk_col) - rtk.Cells(2, rtk_col)) / dt
+                r.n = CInt(timer(Cells(2, 12), rtk.Cells(2, 3)))
+                Cells(2, icol) = rtk.Cells(2, rtk_col) + r.b * (r.n + 1) 'first elevation
+                dir = 1
+                target = 2
+            Else
+                interp = 2
+                Exit Function
+            End If
+        ElseIf i = 2 Then 'initial gap in rtk
+            'use the regression slope of elevation to extrapolate
+            dir = -1
+            target = count + 2
+            dt = timer(Cells(target, 12), rtk.Cells(2, 3))
+            If dt <= 10 Then 'set slope to interpolate from first value in rtk sheet
+                r.b = (Cells(target, icol) - rtk.Cells(2, rtk_col)) / dt
+            Else 'calculate elevation regression and set slope to extrapolate
+                r = regress(target, icol, 50, dir, 11) 'regression through 300 non-blank points
+                start_val = midmean(20, target, icol, 11)
+            End If
+            warn_id = 3
+        ElseIf i + count - 1 = seconds + 1 Then 'terminal gap
+            dir = 1
+            target = i - 1
+            rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
+            dt = timer(rtk.Cells(rtk_rows, 3), Cells(target, 12))
+            If dt <= 10 Then 'set slope to interpolate to last value in rtk sheet
+                r.b = (rtk.Cells(rtk_rows, rtk_col) - Cells(target, icol)) / dt
+            Else 'calculate elevation regression and set slope to extrapolate
+                r = regress(target, icol, 50, dir, 11) 'regression through 300 non-blank points
+                start_val = midmean(20, target, icol, 11)
+            End If
+            If warn_id = 3 Then warn_id = 5 Else warn_id = 4
+        Else 'middle gap--interpolate between two valid values
+            dir = 1
+            target = i - 1
+            r.b = (Cells(i + count, icol) - Cells(target, icol)) / (count + 1)
+        End If
+        If start_val = 0 Then start_val = Cells(target, icol)
+        'interpolate empty cells
+        For j = 1 To count
+            If max_val > 0 Then
+                If i = 2 Or warn_id > 3 Then
+                    d = j
+                Else
+                    d = (count + 1) / 2 - Abs(j - (count + 1) / 2)
+                End If
+                If d < damping_interval Then
+                    wi = WorksheetFunction.Log(damping_interval - d + 1, damping_interval)
+                Else: wi = 0
+                End If
+            End If
+            Cells(target + j * dir, icol) = (r.b * j * dir + start_val) * wi + max_val * (1 - wi)
+        Next j
+        'during elevation interpolation, fill in rtk solution type
+        If icol = 16 Then
+            If warn_id > 2 Then 'initial, terminal or middle gap
+                Cells(i, 22).Resize(count) = Left(Cells(target, 22), 5) & ",interpolated"
+            Else 'no data for record
+                Cells(i, 22).Resize(count) = "None,interpolated"
+            End If
+        End If
+        'highlight records with interpolated data in orange
+        Cells(i, icol).Resize(count).Interior.Color = 49407
+        i = i + count + 1
+    Else
+        i = i + 1
+    End If
+Loop
+
+interp = warn_id
+
+End Function
+
+Private Function midmean(maxcount As Integer, vrow As Long, vcol As Integer, Optional check_col As Integer = 0) As Double
+'Calculate average of maxcount values in column vcol both above and below row vrow
+'if check_col is passed, only count values when check_col is not empty
+Dim k As Integer
+Dim n1 As Integer
+Dim n2 As Integer
+
+If check_col = 0 Then check_col = vcol
 midmean = Cells(vrow, vcol)
 k = 0
 n1 = 0
 Do While k < maxcount And vrow - k > 2
     k = k + 1
-    If Cells(vrow - k, vcol) <> "" Then
+    If Cells(vrow - k, check_col) <> "" Then
         n1 = n1 + 1
         midmean = midmean + Cells(vrow - k, vcol)
     End If
@@ -894,7 +1026,7 @@ k = 0
 n2 = 0
 Do While k < maxcount And vrow + k <= seconds
     k = k + 1
-    If Cells(vrow + k, vcol) <> "" Then
+    If Cells(vrow + k, check_col) <> "" Then
         n2 = n2 + 1
         midmean = midmean + Cells(vrow + k, vcol)
     End If
