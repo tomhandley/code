@@ -618,10 +618,6 @@ combo.Activate
         Else 'dt > 0 --> gap in rtk record, fill with time and basic "no data" info for later interpolation
             count = WorksheetFunction.Min(dt, seconds + 2 - combo_row) 'limit data to seconds + 1 row
             Cells(combo_row, 2).Resize(count).Copy Cells(combo_row, 12)
-'XXX LEAVE stdev_XX and soln type BLANK FOR INTERPOLATION
-'XXX            Cells(combo_row, 20).Resize(count) = "> " & Format(Str(max_xy), "0.00") 'stdev_xy
-'XXX            Cells(combo_row, 21).Resize(count) = max_z 'stdev_z set to max for later smoothing
-'XXX            Cells(combo_row, 22).Resize(count) = "None,Interpolated" 'solution type
         End If
         Cells(combo_row, 18).Resize(count).FormulaR1C1 = "=RC[-2] - RC[3]"  'min = elev - stdev_z
         Cells(combo_row, 19).Resize(count).FormulaR1C1 = "=RC[-3] + RC[2]"  'max = elev + stdev_z
@@ -712,92 +708,19 @@ ReDim warn(1 To 7)
 Const offset_damping = 7 'number of seconds to dampen x-, y- and z-offset trends on log scale before they reach zero
 Const max_damping = 5 'number of seconds to transition from interpolated values of stdev_xy and stdev_z before reaching the maximum
 
-'Dim i As Long
-'Dim count As Long
-'Dim dir As Integer 'direction of interpolation or extrapolation
-'Dim target As Long 'start row for interpolation or extrapolation
-'Dim xr As linear 'x-offset regression
-'Dim yr As linear 'y-offset regression
-''XXXDim xmean As Double 'mean of adjacent x-offsets in window size
-''XXXDim ymean As Double 'mean of adjacent y-offsets in window size
-'Dim j As Long
-'Dim damping As Single 'used for logarithmic damping of slope extrapolation
-'Const window = 100 'number of seconds to average offsets forward and backward to find mean
-
-''Interpolate northing and easting
-'i = 2
-'Do While i <= seconds + 1
-'    If Cells(i, 8) = "" Then 'x-offset is blank
-'        'count blanks
-'        count = 1
-'        Do While Cells(i + count, 8) = "" And i + count <= seconds + 1
-'            count = count + 1
-'        Loop
-'        If count = seconds Then 'no rtk position for whole record
-'            Cells(2, 4).Resize(count).Copy Cells(2, 14) 'copy x from sonar
-'            Cells(2, 5).Resize(count).Copy Cells(2, 13) 'copy y from sonar
-'            warn(1) = True
-'        ElseIf i = 2 Or i + count - 1 = seconds + 1 Then 'initial or terminal gap in rtk
-'            'find regression slope of x- and y-offsets from known points and produce a smooth curve towards the average
-'            If i = 2 Then 'initial gap
-'                dir = -1
-'                target = count + 2
-'                warn(2) = True
-'            Else 'terminal gap
-'                dir = 1
-'                target = i - 1
-'                warn(3) = True
-'            End If
-'            xr = regress(target, 8, 6, dir, 11) 'regression of x-offset through 6 points with valid Point_ID
-'            yr = regress(target, 9, 6, dir, 11) 'regression of y-offset through 6 points with valid Point_ID
-'XXX            xmean = midmean(window, target, 8) 'average x-offset within +/- <window> values
-'XXX            ymean = midmean(window, target, 9) 'average y-offset within +/- <window> values
-'            For j = 1 To count
-'            'calculate x- and y-offsets
-'                If j < offset_damping + 2 Then
-'                    damping = WorksheetFunction.Log(offset_damping - j + 2, offset_damping + 1)
-'                    Cells(target + j * dir, 8) = Cells(target + (j - 1) * dir, 8) + xr.b * damping
-'                    Cells(target + j * dir, 9) = Cells(target + (j - 1) * dir, 9) + yr.b * damping
-'                Else
-'                    damping = 0
-'XXX                    If j <= offset_damping * 2 Then damping = WorksheetFunction.Log(j - offset_damping, offset_damping + 1) Else damping = 1
-'XXX                    Cells(target + j * dir, 8) = Cells(target + (j - 1) * dir, 8) + (xmean - Cells(target + (j - 1) * dir, 8)) / offset_damping * damping
-'XXX                    Cells(target + j * dir, 9) = Cells(target + (j - 1) * dir, 9) + (ymean - Cells(target + (j - 1) * dir, 9)) / offset_damping * damping
-'                End If
-'            Next j
-'        Else 'middle gap--interpolate between two valid values
-'            xr.b = (Cells(i + count, 8) - Cells(i - 1, 8)) / (count + 1)
-'            yr.b = (Cells(i + count, 9) - Cells(i - 1, 9)) / (count + 1)
-'            For j = 0 To count - 1
-'                Cells(i + j, 8) = Cells(i + j - 1, 8) + xr.b 'x-offset
-'                Cells(i + j, 9) = Cells(i + j - 1, 9) + yr.b 'y-offset
-'            Next j
-'        End If
-'        'use formula for northing and easting in case x-offset and y-offset are changed manually
-'        Cells(i, 13).Resize(count).FormulaR1C1 = "=RC[-8] + RC[-4]" 'northing
-'        Cells(i, 14).Resize(count).FormulaR1C1 = "=RC[-10] + RC[-6]" 'easting
-'        'highlight records with interpolated data in orange
-'        Cells(i, 8).Resize(count, 2).Interior.Color = 49407
-'        Cells(i, 13).Resize(count, 2).Interior.Color = 49407
-'        i = i + count + 1
-'    Else
-'        i = i + 1
-'    End If
-'Loop
-
 'Interpolate northing and easting
-x = interp(8, offset_damping + 3, , 0, 20) 'interpolate x-offset and easting
-x = interp(9, offset_damping + 3, , 0, 20) 'interpolate y-offset and northing
+x = interp(8, offset_damping, , 0, 20) 'interpolate x-offset and easting
+x = interp(9, offset_damping, , 0, 20) 'interpolate y-offset and northing
 
 'Interpolate missing rtk data
 warn_id = interp(16, max_damping, 6) 'interpolate elevation
+If warn_id = 5 Then
+    warn(6) = True
+    warn(7) = True
+ElseIf warn_id > 0 Then
+    warn(warn_id + 3) = True
+End If
 If warn_id = 0 Or warn_id > 2 Then
-    If warn_id = 5 Then
-        warn(6) = True
-        warn(7) = True
-    ElseIf warn_id > 0 Then
-        warn(warn_id + 3) = True
-    End If
     x = interp(20, max_damping, 7, max_xy) 'interpolate stdev_xy
     x = interp(21, max_damping, 8, max_z) 'interpolate stdev_z
 ElseIf warn_id = 1 Then
@@ -810,7 +733,6 @@ Else 'warn_id = 2
 End If
 
 'Output warnings
-    x = interp(20, max_damping, 7, max_xy) 'interpolate stdev_xy
     warning = ""
     If warn(1) Or warn(4) Or warn(5) Then
         warning = "No RTK " & IIf(warn(1), "position " & IIf(warn(4) Or warn(5), "or elevation ", ""), "elevation ") & "data for full record! "
@@ -890,10 +812,9 @@ Do While i <= seconds + 1
                 warn_id = 1
                 r.b = (rtk.Cells(rtk_rows, rtk_col) - rtk.Cells(2, rtk_col)) / dt
                 r.n = CInt(timer(Cells(2, 12), rtk.Cells(2, 3)))
-                Cells(2, icol) = rtk.Cells(2, rtk_col) + r.b * (r.n + 1) 'first elevation
-                count = count - 1
+                start_val = rtk.Cells(2, rtk_col) + r.b * r.n 'first elevation
                 dir = 1
-                target = 2
+                target = 1
             Else
                 interp = 2
                 Exit Function
@@ -902,10 +823,9 @@ Do While i <= seconds + 1
             dir = -1
             target = count + 2
             dt = timer(Cells(target, 12), rtk.Cells(2, 3))
-            If dt <= damping_interval * 2 And rtk_col > 0 Then 'set slope to interpolate from first value in rtk sheet
+            If (dt - count) <= damping_interval * 2 And rtk_col > 0 Then 'set slope to interpolate from first value in rtk sheet
                 r.b = (Cells(target, icol) - rtk.Cells(2, rtk_col)) / dt
                 midpoint = (dt + 1) / 2
-                shift = dt - count
             Else 'calculate elevation regression and set slope to extrapolate
                 extra = True
                 r = regress(target, icol, window, dir, 11) 'regression through window size number of non-blank points
@@ -917,10 +837,9 @@ Do While i <= seconds + 1
             target = i - 1
             rtk_rows = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
             dt = timer(rtk.Cells(rtk_rows, 3), Cells(target, 12))
-            If dt <= damping_interval * 2 And rtk_col > 0 Then 'set slope to interpolate to last value in rtk sheet
+            If (dt - count) <= damping_interval * 2 And rtk_col > 0 Then 'set slope to interpolate to last value in rtk sheet
                 r.b = (rtk.Cells(rtk_rows, rtk_col) - Cells(target, icol)) / dt
                 midpoint = (dt + 1) / 2
-                shift = 0
             Else 'calculate elevation regression and set slope to extrapolate
                 extra = True
                 r = regress(target, icol, window, dir, 11) 'regression through window size number of non-blank points
@@ -932,7 +851,6 @@ Do While i <= seconds + 1
             target = i - 1
             r.b = (Cells(i + count, icol) - Cells(target, icol)) / (count + 1)
             midpoint = (count + 1) / 2
-            shift = 0
         End If
         If start_val = 0 Then start_val = Cells(target, icol)
         'interpolate empty cells
@@ -945,7 +863,7 @@ Do While i <= seconds + 1
                     If extra Then 'extrapolation beyond endpoints
                         d = j
                     Else
-                        d = midpoint - Abs(j + shift - midpoint) 'number of records from a known point
+                        d = midpoint - Abs(j - midpoint)  'number of records from a known point
                     End If
                     If d < damping_interval Then
                         wi = WorksheetFunction.Log(damping_interval - d + 1, damping_interval)
@@ -981,7 +899,7 @@ interp = warn_id
 End Function
 
 Private Function midmean(maxcount As Integer, vrow As Long, vcol As Integer, Optional check_col As Integer = 0) As Double
-'Calculate average of maxcount values in column vcol both above and below row vrow
+'Calculate average of maxcount values in column vcol both above and below row vrow (inclusive)
 'if check_col is passed, only count values when check_col is not empty
 Dim k As Integer
 Dim n1 As Integer
