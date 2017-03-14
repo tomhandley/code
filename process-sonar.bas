@@ -5,9 +5,9 @@ Dim basepath As String 'path to R000XX_Final_Template
 Dim path As String 'path to record
 Dim record As String 'record name
 Dim fileprompt As VbMsgBoxResult
-Dim mybook As Workbook '000XX_Final_Template workbook path
-Dim row As Long 'row counter
-Dim seconds As Long 'counts number of full seconds in sonar file
+Dim mybook As Workbook
+Dim row As Long
+Dim seconds As Long 'number of full seconds in sonar file
 Dim DE_file As String 'file path to data_explorer index file
 Dim rtk_file As String 'file path to rtk data file
 Const tlen = 0.114 'transducer length from center of mounting pole to sonar projector
@@ -40,25 +40,25 @@ Sub assembleXYZ()
 ' saves processed record as R000XX_Final.xlsx and Export tab as R000XX.csv
 '
 ' ****Notes****
-' Move R000XX_Final_Template.xlsx to the directory containing the R000XX files of
-' interest and run from that directory
 ' All functions were defined for the following worksheet columns:
 ' Sonar: (1)SonarTime, (2)Easting, (3)Northing, (4)Depth, (5)COG
 ' RTK: (1)Base_ID, (2)Point_ID, (3)Start Time, (4Northing, (5)Easting, (6)Elevation, (7)Horizontal Precision, (8)Vertical Precision, (9)Std Dev n, (10)Std Dev e, (11)Std Dev u, (12)Std Dev Hz, (13)Geoid Separation, (14)dN, (15)dE, (16)dHt, (17)Solution Type
 ' Combo: (1)Index, (2)Sonar Time, (3)Row, (4)X (Easting), (5)Y (Northing), (6)COG_sonar, (7)Depth, (8)X-offset, (9)Y-offset, (10)BLANK, (11)Point ID, (12)RTK Time, (13)Northing, (14)Easting, (15)COG_RTK, (16)Elev, (17)Smooth, (18)Min, (19)Max, (20)StDev_XY, (21)StDev_Z, (22)Solution Type
 ' Export: (1)Northing, (2)Easting, (3)Bed_elev, (4)DateTime, (5)Sonar_ID, (6)RTK_ID
 
+Dim log_file As String 'file path to R000XX.txt processing log file
 Dim IsFile As Boolean
 Dim ws As Integer
 Dim rng As Range
+Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to match rtk times (UTC)
 
 'Read defaults from text file
     Set mybook = ActiveWorkbook
     path = mybook.FullName
     path = Left(path, InStrRev(path, "\")) 'remove filename from path string
     basepath = path
-    IO_defaults "read"
-
+    IO_defaults log_file, "read"
+    
 'Import data to sonar worksheet
     combo.Activate
     If record = "na" Then
@@ -92,12 +92,12 @@ Dim rng As Range
     
     'check whether R000XX.DAT.XYX.csv exists (processed SonarTRX file)
     IsFile = False
-    On Error Resume Next
     IsFile = GetAttr(path & record & ".DAT.XYZ.csv")
     If Not IsFile Then
         fileprompt = MsgBox(record & ".DAT.XYZ.csv sonar file not found! Processing cancelled.", vbExclamation, "File not found!")
         Exit Sub
     End If
+    On Error GoTo 0
     
 'Clear anything past header row on first four worksheets
     For ws = 1 To 4
@@ -108,11 +108,14 @@ Dim rng As Range
     Next ws
 
 'Import sonar ping time stamps from IDX file
-    sonar_import
+    sonar_import utc_shift
     If fileprompt = vbCancel Then Exit Sub
     
 'Divide sonar data by full seconds and write to combo sheet
     sonar_to_combo
+
+'Flag points listed in processing log for inspection or deletion
+    flag_points log_file, utc_shift
 
 'Import pertinent rtk data to rtk worksheet and insert missing data lines
     rtk_import Cells(2, 2), Cells(seconds + 1, 2)
@@ -147,19 +150,7 @@ Dim rng As Range
     End With
 
 'Extract data to export sheet
-    'write excel formulas so changes to combo are dynamically adjusted
-    For row = 1 To seconds
-        expo.Cells(row + 1, 1).FormulaR1C1 = "=Combo!RC[12]" 'northing
-        expo.Cells(row + 1, 2).FormulaR1C1 = "=Combo!RC[12]" 'easting
-        expo.Cells(row + 1, 3).FormulaR1C1 = "=Combo!RC[14]-Combo!RC[4]" 'bottom = smoothed_elevation - depth
-        expo.Cells(row + 1, 4).FormulaR1C1 = "=Combo!RC[-2]" 'datetime
-        expo.Cells(row + 1, 5).Value = record 'sonar id
-        expo.Cells(row + 1, 6).FormulaR1C1 = "=IF(Combo!RC[5]="""",""N/A"",Combo!RC[5])" 'rtk id
-    Next row
-    Range(expo.Cells(2, 1), expo.Cells(seconds + 1, 1)).NumberFormat = "0.0000"
-    Range(expo.Cells(2, 2), expo.Cells(seconds + 1, 2)).NumberFormat = "0.0000"
-    Range(expo.Cells(2, 3), expo.Cells(seconds + 1, 3)).NumberFormat = "0.000"
-    Range(expo.Cells(2, 4), expo.Cells(seconds + 1, 4)).NumberFormat = "m/d/yyyy hh:mm:ss"
+    export_data
     
 'Save files
 Dim SaveOn As VbMsgBoxResult
@@ -173,11 +164,11 @@ Dim SaveOn As VbMsgBoxResult
     Else
         MsgBox ("Record " & record & " processed but not saved or exported")
     End If
-    IO_defaults "write" 'write defaults to text file
+    IO_defaults log_file, "write" 'write defaults file
 
 End Sub
 
-Private Sub IO_defaults(Optional IOtype As String = "read")
+Private Sub IO_defaults(ByRef log_file As String, Optional IOtype As String = "read")
 'read/write last used record, DE_file, and rtk_file to/from R000XX_defaults.txt
 Dim f As Integer 'file index number
     f = FreeFile
@@ -187,6 +178,7 @@ Dim f As Integer 'file index number
         Open "R000XX_defaults.txt" For Input As #f
         If Err.Number <> 0 Then
             record = "na"
+            log_file = "na"
             DE_file = "na"
             rtk_file = "na"
             Exit Sub
@@ -194,6 +186,7 @@ Dim f As Integer 'file index number
         On Error GoTo 0 'reset error handling
         Input #f, record
         Input #f, path
+        Input #f, log_file
         Input #f, DE_file
         Input #f, rtk_file
         Close #f
@@ -202,32 +195,36 @@ Dim f As Integer 'file index number
         Open "R000XX_defaults.txt" For Output As #f
         Write #f, record
         Write #f, path
+        Write #f, log_file
         Write #f, DE_file
         Write #f, rtk_file
         Close #f
     End If
 End Sub
 
-Private Sub sonar_import()
+Private Sub sonar_import(ByRef time_shift As Integer)
 'Import sonar ping time stamps from IDX file
 '   Humminbird sonar files consist of a DAT file, and an IDX and SON file for each channel:
 '       DAT file -- holds record info for starting date and time, duration, and beginning coordinates
 '       IDX files -- two 4-byte fields per record specifying a time increment and a line index in the SON file
 '       SON files -- complex binary file with full navigation data and imagery for each record
+'   If there are three channels, B000 is downscan, B001 is sidescan left, and B002 is sidescan right
+'   If there are four channels, B000 is downscan01, B001 is downscan-2, B002 is sidescan left, and B003 is sidescan right
+'time_shift is the number of hours to shift sonar times forward/back to match rtk times (UTC)
+'   for Pacific time, use 8 for records during PST (winter Nov-Mar) and 7 during PDT (summer Mar-Nov)
+'   based on a sonar file stated in local time and rtk file stated in UTC time
 Dim f As Integer 'file index number
 Dim fLen As Long 'length of IDX file in bytes
 Dim idx_data() As Byte 'holds binary data from IDX file
 Dim DE_book As Workbook 'data explorer workbook
+Dim rng As Range
 Dim dat_book As Workbook 'R000XX.DAT.XYZ.csv path
 Dim fulldate As Double 'initial datetime value (days since 1900 + hr/24 + min/60 + sec/3600 + ms/3600/1000)
-Dim utc_shift As Integer 'value to shift sonar times forward/back to match rtk times (UTC)
-    'for Pacific time, use 8 for records during PST (winter Nov-Mar) and 7 during PDT (summer Mar-Nov)
-    'based on a sonar file stated in local time and rtk file stated in UTC time
 Dim cog As Double 'course over ground
 
 'Load binary data from IDX file
     f = FreeFile
-    Open path & record & "\B002.IDX" For Binary Access Read As #f
+    Open path & record & "\B002.IDX" For Binary Access Read As #f 'use sidescan channel for time stamps
     fLen = LOF(f)
     ReDim idx_data(1 To fLen)
     Get f, , idx_data
@@ -264,18 +261,19 @@ Dim cog As Double 'course over ground
     End If
    
 'Read data and close file
-    row = WorksheetFunction.Match(Val(Right(record, 5)), DE_book.Worksheets(1).Range("D2:D400"), 0) + 1 'find record number in DE_book
+    Set rng = DE_book.Worksheets(1).Cells(1, 4).Resize(DE_book.Worksheets(1).Cells(Rows.count, "A").End(xlUp).row, 1) 'last used row
+    row = Application.Match(Val(Right(record, 5)), rng, 0) 'find record number in DE_book
     fulldate = DE_book.Worksheets(1).Cells(row, 1) 'initial date from DE_book
     If Month(fulldate) > 2 And Month(fulldate) < 11 Then
-        utc_shift = 7
+        time_shift = 7
     Else
-        utc_shift = 8
+        time_shift = 8
     End If
-    fileprompt = MsgBox("Accept time offset of UTC -" & utc_shift & "?", vbYesNo, "UTC offset")
+    fileprompt = MsgBox("Accept time offset of UTC -" & time_shift & "?", vbYesNo, "UTC offset")
     If fileprompt = vbNo Then
         MsgBox "Set UTC time offset for date of data collection (" & Month(fulldate) & "/" & Day(fulldate) & "/" & Year(fulldate) & "). Set the offset to 7 for Pacific Standard Time (winter months) or 8 for Pacific Daylight Time (summer months).", vbCritical, "Set UTC offset"
     End If
-    fulldate = fulldate + DE_book.Worksheets(1).Cells(row, 6) + utc_shift / 24  'Shift times forward or back for UTC correction
+    fulldate = fulldate + DE_book.Worksheets(1).Cells(row, 6) + time_shift / 24  'Shift times forward or back for UTC correction
     DE_book.Close
     Set dat_book = Workbooks.Open(Filename:=path & record & ".DAT.XYZ.csv", ReadOnly:=True)
     For row = 0 To fLen \ 8 - 1 'backslash operator is integer division
@@ -364,6 +362,123 @@ Dim r As linear 'regression values
         r = regress(i - 1, 6, 5, , , row)
         Cells(i, 6) = r.a + r.b * (1 + r.n)
     End If
+
+End Sub
+
+Private Sub flag_points(ByRef log_file As String, time_shift As Integer)
+'Flags records for inspection or deletion based on data in log_file
+'flag handling:
+'  records marked "d":
+'    rtk elevation is not imported, elevation is interpolated
+'    position data are unaffected
+'    points are not copied to export sheet
+'  records marked "i":
+'    flag is marked on export sheet
+'log_file formatting:
+'text file with record ID integer and notes on one line, followed by multiple lines
+'  led by a two-space indent, a flag of "i" or "d", the time range affected, and optional comments
+'repeat with no gaps between records
+'integer ID is just the integer portion of the record, ex. R00092-->92
+'Line 1: ID notes
+'Line 2:   f hh:mm:ss-hh:mm:ss <comments>
+
+Dim f As Integer 'file index number
+Dim record_num As String 'numeral value of record
+Dim notes As String 'notes in log file to output in a message box
+Dim log_data() As String 'holds log data
+Dim i As Integer
+Dim count As Integer
+Dim op As String
+Dim dash As Integer
+Dim time1 As String
+Dim time2 As String
+Dim start_time As Date
+Dim t1 As Date
+Dim t2 As Date
+Dim dt As Long
+ReDim log_data(0)
+
+'Open log file
+    f = FreeFile
+    On Error Resume Next
+    Open log_file For Input As #f
+    ChDir (path) 'set default path
+    Do While Err.Number <> 0
+        MsgBox Prompt:="Log file not found!", Title:="File not found"
+        'select DE_file from explorer
+        log_file = Application.GetOpenFilename("Text Files (*.txt),*txt", , "Log file not found! Please select log file")
+    Loop
+    On Error GoTo 0 'reset error handling
+
+'Read log info into log_data
+    row = 0
+    notes = "x"
+    record_num = CStr(Val(Right(record, 5)))
+    Do While Not EOF(f)
+        Line Input #f, log_data(0)
+        row = row + 1
+        dash = InStr(1, log_data(0), " ")
+        If dash = 0 Then count = Len(log_data(0)) Else count = dash - 1
+        If Left(log_data(0), count) = record_num Then
+            notes = Right(log_data(0), Len(log_data(0)) - (Len(record_num)))
+            i = 0
+            Line Input #f, log_data(0)
+            Do While Left(log_data(i), 2) = "  "
+                log_data(i) = Right(log_data(i), Len(log_data(i)) - 2) 'remove indent
+                i = i + 1
+                ReDim Preserve log_data(i)
+                Line Input #f, log_data(i)
+            Loop
+            Exit Do
+        End If
+    Loop
+    Close f
+    If notes = "x" Then
+        MsgBox Prompt:="Record " & Str(record_num) & " not found in log file!", Title:="Record not found"
+        Exit Sub
+    Else
+        If Len(notes) > 0 Then MsgBox "Processing notes: " & Right(notes, Len(notes) - 1)
+    End If
+
+'Flag records in column J on combo sheet
+    count = i - 1
+    start_time = combo.Cells(2, 2) - Int(combo.Cells(2, 2))
+    On Error Resume Next
+    For i = 0 To count
+        Err.Number = 0
+        op = Left(log_data(i), 1)
+        dash = InStr(3, log_data(i), "-")
+        If dash > 0 Then
+            time1 = Mid(log_data(i), 3, dash - 3)
+        Else
+            time1 = Mid(log_data(i), 3, 8)
+        End If
+        time2 = Mid(log_data(i), dash + 1, InStr(7, log_data(i), " ") - dash - 1)
+        If time1 = "start" Then
+            t1 = start_time
+        Else: t1 = TimeValue(time1) + time_shift / 24
+        End If
+        If time2 = "end" Then
+            t2 = combo.Cells(seconds + 1, 2) - Int(combo.Cells(seconds + 1, 2))
+        ElseIf dash > 0 Then
+            t2 = TimeValue(time2) + time_shift / 24
+        Else 'only one point to flag
+            t2 = t1
+        End If
+        If Err.Number = 0 Then
+            dt = timer(t2, t1) + 1
+            If t1 < start_time Or dt + timer(t1, start_time) > seconds Then
+                MsgBox "Problem reading row " & row + i + 1 & ": '" & vbCrLf & log_data(i) & _
+                "'" & vbCrLf & "Times outside of record bounds!", vbCritical, "Record reading error"
+            Else
+                combo.Cells(2, 10).Offset(timer(t1, start_time)).Resize(dt) = op
+            End If
+        Else
+            MsgBox "Problem reading row " & row + i + 1 & ": '" & vbCrLf & log_data(i) & _
+            "'" & vbCrLf & "Invalid time format!", vbCritical, "Record reading error"
+        End If
+    Next i
+    On Error GoTo 0
 
 End Sub
 
@@ -594,7 +709,7 @@ combo.Activate
                         Cells(combo_row, 13) = rtk_y 'northing
                     End If
                     avg = WorksheetFunction.Average(rtk.Cells(rtk_row, 8).Resize(count))
-                    If avg <= max_z Then
+                    If avg <= max_z And combo.Cells(combo_row, 10) <> "d" Then
                     'both horizontal and vertical precision OK
                         Cells(combo_row, 16) = WorksheetFunction.Average(rtk.Cells(rtk_row, 6).Resize(count)) 'elevation
                         Cells(combo_row, 21) = WorksheetFunction.Average(rtk.Cells(rtk_row, 8).Resize(count)) 'stdev_z
@@ -951,7 +1066,7 @@ Private Function timer(time1, time2 As Date) As Long
     End If
 End Function
 
-Sub critical()
+Private Sub critical()
 'Identify critical points in elevation and interpolate linearly
 'between critical points. Points are stored in crit() with values
 'in yc(), which could be passed as arguments to a more sophisticated
@@ -1061,6 +1176,39 @@ Next i
 
 End Sub
 
+Private Sub export_data()
+Dim count As Long
+
+'write excel formulas to export sheet so changes to combo are dynamically adjusted
+    expo.Cells(2, 1).Resize(seconds, 2).FormulaR1C1 = "=Combo!RC[12]" 'northing, easting
+    expo.Cells(2, 3).Resize(seconds).FormulaR1C1 = "=Combo!RC[14]-Combo!RC[4]" 'bottom = smoothed_elevation - depth
+    expo.Cells(2, 4).Resize(seconds).FormulaR1C1 = "=Combo!RC[-2]" 'datetime
+    expo.Cells(2, 5).Resize(seconds) = record 'sonar id
+    expo.Cells(2, 6).Resize(seconds).FormulaR1C1 = "=IF(Combo!RC[5]="""",""N/A"",Combo!RC[5])" 'rtk id
+    combo.Cells(2, 10).Resize(seconds).Copy Destination:=expo.Cells(2, 7) 'flag
+    
+'remove rows flagged "d"
+    On Error Resume Next
+    row = Application.Match("d", expo.Cells(2, 7).Resize(seconds), 0) + 1
+    Do While Err.Number = 0
+        count = 0
+        Do While expo.Cells(row + count, 7) = "d"
+            count = count + 1
+        Loop
+        expo.Cells(row, 10).Resize(count).EntireRow.Delete
+        seconds = seconds - count
+        row = Application.Match("d", expo.Cells(2, 7).Resize(seconds), 0) + 1
+    Loop
+    On Error GoTo 0
+    
+'update formatting
+    Range(expo.Cells(2, 1), expo.Cells(seconds + 1, 1)).NumberFormat = "0.0000"
+    Range(expo.Cells(2, 2), expo.Cells(seconds + 1, 2)).NumberFormat = "0.0000"
+    Range(expo.Cells(2, 3), expo.Cells(seconds + 1, 3)).NumberFormat = "0.000"
+    Range(expo.Cells(2, 4), expo.Cells(seconds + 1, 4)).NumberFormat = "m/d/yyyy hh:mm:ss"
+
+End Sub
+
 Private Sub save_files()
 'Save worksheet with appropriate record number, save export tab as csv, and reopen Template
     Application.DisplayAlerts = False
@@ -1070,10 +1218,6 @@ Private Sub save_files()
         export.SaveAs Filename:=path & record & ".csv", FileFormat:=xlCSV
     'reopen blank R000XX_Final_Template
         ActiveWorkbook.Close False
-        Workbooks.Open Filename:=basepath & "R000XX_Final_Template.xlsx"
+        Workbooks.Open Filename:=basepath & "R000XX_Final_Template.xlsm"
     Application.DisplayAlerts = True
 End Sub
-
-
-
-
