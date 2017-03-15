@@ -8,8 +8,6 @@ Dim fileprompt As VbMsgBoxResult
 Dim mybook As Workbook
 Dim row As Long
 Dim seconds As Long 'number of full seconds in sonar file
-Dim DE_file As String 'file path to data_explorer index file
-Dim rtk_file As String 'file path to rtk data file
 Const tlen = 0.114 'transducer length from center of mounting pole to sonar projector
 Const max_z = 0.03 'maximum allowable rtk precision in z; 3 cm based on equipment limitations
 Const max_xy = 0.15 'maximum allowable rtk precision in xy; based on limiting overall uncertainty
@@ -47,6 +45,8 @@ Sub assembleXYZ()
 ' Export: (1)Northing, (2)Easting, (3)Bed_elev, (4)DateTime, (5)Sonar_ID, (6)RTK_ID
 
 Dim log_file As String 'file path to R000XX.txt processing log file
+Dim DE_file As String 'file path to data_explorer index file
+Dim rtk_file As String 'file path to rtk data file
 Dim IsFile As Boolean
 Dim ws As Integer
 Dim rng As Range
@@ -57,9 +57,9 @@ Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to m
     path = mybook.FullName
     path = Left(path, InStrRev(path, "\")) 'remove filename from path string
     basepath = path
-    IO_defaults log_file, "read"
+    IO_defaults log_file, DE_file, rtk_file, "read"
     
-'Import data to sonar worksheet
+'Set file paths
     combo.Activate
     If record = "na" Then
         fileprompt = vbNo
@@ -81,7 +81,8 @@ Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to m
             path = Left(path, InStrRev(path, "\")) 'cut filename from root path
         End If
     End If
-    'check whether R000XX_Final.xlsx already exists
+    
+'Check whether R000XX_Final.xlsx already exists
     IsFile = False
     On Error Resume Next
     IsFile = GetAttr(path & record & "_Final.xlsx")
@@ -90,11 +91,11 @@ Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to m
         If fileprompt = vbCancel Then Exit Sub
     End If
     
-    'check whether R000XX.DAT.XYX.csv exists (processed SonarTRX file)
+'Check whether R000XX.DAT.XYX.csv exists (processed SonarTRX file)
     IsFile = False
     IsFile = GetAttr(path & record & ".DAT.XYZ.csv")
     If Not IsFile Then
-        fileprompt = MsgBox(record & ".DAT.XYZ.csv sonar file not found! Processing cancelled.", vbExclamation, "File not found!")
+        fileprompt = MsgBox(record & ".DAT.XYZ.csv sonar file not found! Processing cancelled.", vbCritical, "File not found!")
         Exit Sub
     End If
     On Error GoTo 0
@@ -108,7 +109,7 @@ Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to m
     Next ws
 
 'Import sonar ping time stamps from IDX file
-    sonar_import utc_shift
+    sonar_import DE_file, utc_shift
     If fileprompt = vbCancel Then Exit Sub
     
 'Divide sonar data by full seconds and write to combo sheet
@@ -118,7 +119,7 @@ Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to m
     flag_points log_file, utc_shift
 
 'Import pertinent rtk data to rtk worksheet and insert missing data lines
-    rtk_import Cells(2, 2), Cells(seconds + 1, 2)
+    rtk_import rtk_file, Cells(2, 2), Cells(seconds + 1, 2)
     If fileprompt = vbCancel Then Exit Sub
 
 'Extract rtk data to combo sheet
@@ -164,11 +165,11 @@ Dim SaveOn As VbMsgBoxResult
     Else
         MsgBox ("Record " & record & " processed but not saved or exported")
     End If
-    IO_defaults log_file, "write" 'write defaults file
+    IO_defaults log_file, DE_file, rtk_file, "write" 'write defaults file
 
 End Sub
 
-Private Sub IO_defaults(ByRef log_file As String, Optional IOtype As String = "read")
+Private Sub IO_defaults(ByRef log_file As String, ByRef DE_file As String, ByRef rtk_file As String, Optional IOtype As String = "read")
 'read/write last used record, DE_file, and rtk_file to/from R000XX_defaults.txt
 Dim f As Integer 'file index number
     f = FreeFile
@@ -202,7 +203,7 @@ Dim f As Integer 'file index number
     End If
 End Sub
 
-Private Sub sonar_import(ByRef time_shift As Integer)
+Private Sub sonar_import(ByRef DE_file As String, ByRef time_shift As Integer)
 'Import sonar ping time stamps from IDX file
 '   Humminbird sonar files consist of a DAT file, and an IDX and SON file for each channel:
 '       DAT file -- holds record info for starting date and time, duration, and beginning coordinates
@@ -230,36 +231,12 @@ Dim cog As Double 'course over ground
     Get f, , idx_data
     Close f
 
-'Choose data explorer file (DE_file) path
-    fileprompt = MsgBox("Use default Data Explorer file path? (" & DE_file & ")", vbYesNoCancel, "Data Explorer source")
-    If fileprompt = vbCancel Then
-        Exit Sub
-    Else
-        If fileprompt = vbYes Then
-            If DE_file = "na" Then
-                MsgBox "Defaults file not found!" & vbCrLf & "Open file from list.", vbCritical, "File read error!"
-            Else
-                Application.ScreenUpdating = False
-                On Error Resume Next 'check that file opens without errors
-                Set DE_book = Workbooks.Open(Filename:=DE_file, ReadOnly:=True)
-                If Err.Number <> 0 Then
-                    MsgBox "Default data explorer file not found!", vbCritical, "Invalid file path!"
-                    DE_file = "na"
-                End If
-                On Error GoTo 0 'reset error handling
-            End If
-        Else
-            DE_file = "na"
-        End If
-    End If
-    If DE_file = "na" Then
-    'select DE_file from explorer
-        ChDir (path) 'set default path
-        DE_file = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select data explorer file")
-        Application.ScreenUpdating = False
-        Set DE_book = Workbooks.Open(Filename:=DE_file, ReadOnly:=True)
-    End If
-   
+'Open data explorer file
+    check_file DE_file, "Data Explorer"
+    If fileprompt = vbCancel Then Exit Sub
+    Application.ScreenUpdating = False
+    Set DE_book = Workbooks.Open(Filename:=DE_file, ReadOnly:=True)
+
 'Read data and close file
     Set rng = DE_book.Worksheets(1).Cells(1, 4).Resize(DE_book.Worksheets(1).Cells(Rows.count, "A").End(xlUp).row, 1) 'last used row
     row = Application.Match(Val(Right(record, 5)), rng, 0) 'find record number in DE_book
@@ -271,7 +248,9 @@ Dim cog As Double 'course over ground
     End If
     fileprompt = MsgBox("Accept time offset of UTC -" & time_shift & "?", vbYesNo, "UTC offset")
     If fileprompt = vbNo Then
-        MsgBox "Set UTC time offset for date of data collection (" & Month(fulldate) & "/" & Day(fulldate) & "/" & Year(fulldate) & "). Set the offset to 7 for Pacific Standard Time (winter months) or 8 for Pacific Daylight Time (summer months).", vbCritical, "Set UTC offset"
+        time_shift = InputBox("Set UTC time offset for date of data collection (" & Month(fulldate) & "/" & Day(fulldate) & "/" & Year(fulldate) & "). " & _
+            "Set the offset to 7 for Pacific Standard Time (winter months) or 8 for Pacific Daylight Time (summer months).", _
+            "Set UTC offset", IIf(time_shift = 7, 8, 7))
     End If
     fulldate = fulldate + DE_book.Worksheets(1).Cells(row, 6) + time_shift / 24  'Shift times forward or back for UTC correction
     DE_book.Close
@@ -369,7 +348,7 @@ Private Sub flag_points(ByRef log_file As String, time_shift As Integer)
 'Flags records for inspection or deletion based on data in log_file
 'flag handling:
 '  records marked "d":
-'    rtk elevation is not imported, elevation is interpolated
+'    rtk elevation is not imported, elevation is later interpolated
 '    position data are unaffected
 '    points are not copied to export sheet
 '  records marked "i":
@@ -383,6 +362,7 @@ Private Sub flag_points(ByRef log_file As String, time_shift As Integer)
 'Line 2:   f hh:mm:ss-hh:mm:ss <comments>
 
 Dim f As Integer 'file index number
+Dim response As VbMsgBoxResult
 Dim record_num As String 'numeral value of record
 Dim notes As String 'notes in log file to output in a message box
 Dim log_data() As String 'holds log data
@@ -404,11 +384,13 @@ ReDim log_data(0)
     Open log_file For Input As #f
     ChDir (path) 'set default path
     Do While Err.Number <> 0
-        MsgBox Prompt:="Log file not found!", Title:="File not found"
-        'select DE_file from explorer
-        log_file = Application.GetOpenFilename("Text Files (*.txt),*txt", , "Log file not found! Please select log file")
+        response = MsgBox("Log file not found! Select a new log file?", vbYesNo, "File not found")
+        If response = vbNo Then Exit Sub
+        Err.Number = 0
+        log_file = Application.GetOpenFilename("Text Files (*.txt),*txt", , "Select log file")
+        If log_file = "" Then Exit Sub
     Loop
-    On Error GoTo 0 'reset error handling
+    On Error GoTo 0
 
 'Read log info into log_data
     row = 0
@@ -478,6 +460,31 @@ ReDim log_data(0)
             "'" & vbCrLf & "Invalid time format!", vbCritical, "Record reading error"
         End If
     Next i
+    On Error GoTo 0
+
+End Sub
+
+Private Sub check_file(ByRef file_path As String, name As String)
+'Check whether to use default file_path, and if so whether the file exists,
+'  otherwise request correct file path
+Dim IsFile As Boolean
+
+    If file_path = "na" Then
+        fileprompt = vbNo
+        MsgBox "Defaults file not found! Please navigate to " & name & " file", vbCritical, "File read error"
+    Else: fileprompt = MsgBox("Use default " & name & " file path? (" & file_path & ")", vbYesNoCancel, name & " source")
+    End If
+    If fileprompt = vbCancel Then Exit Sub
+    If fileprompt = vbNo Then file_path = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select " & name & " file")
+    ChDir (path) 'set default path
+    On Error Resume Next
+    IsFile = False
+    IsFile = GetAttr(file_path)
+    Do While Not IsFile
+        MsgBox "Invalid file path!" & vbCrLf & "Please navigate to " & name & " file.", vbCritical, "File read error"
+        file_path = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select " & name & " file")
+        IsFile = GetAttr(file_path)
+    Loop
     On Error GoTo 0
 
 End Sub
@@ -591,44 +598,44 @@ ReDim xval(1 To n)
 
 End Function
 
-Private Sub rtk_import(date1 As Date, date2 As Date)
+Private Sub rtk_import(ByRef rtk_file As String, date1 As Date, date2 As Date)
 'Import rtk data to rtk worksheet, delete duplicate entries, and insert missing rows
 Dim rng As Range
 Dim rtk_book As Workbook
 Dim rtk_start, rtk_end As Long 'starting and ending row numbers in rtk_book to copy over
 Dim dt As Long
 
-'Choose rtk file path
-    fileprompt = MsgBox("Use default RTK data file path? (" & rtk_file & ")", vbYesNoCancel, "RTK data source")
-    If fileprompt = vbCancel Then
-        Exit Sub
-    Else
-        If fileprompt = vbYes Then
-            If rtk_file = "na" Then
-                MsgBox "Defaults file not found!" & vbCrLf & "Open file from list.", vbCritical, "File read error!"
-            Else
-                Application.ScreenUpdating = False
-                On Error Resume Next 'check that file opens without errors
-                Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
-                If Err.Number <> 0 Then
-                    MsgBox "Default RTK data file not found!", vbCritical, "Invalid file path!"
-                    rtk_file = "na"
-                    Application.ScreenUpdating = True
-                End If
-                On Error GoTo 0 'reset error handling
-            End If
-        Else
-            rtk_file = "na"
-        End If
-    End If
-    If rtk_file = "na" Then
-    'select rtk_file from explorer
-        ChDir (path) 'set default path
-        rtk_file = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select RTK data file")
-        Application.ScreenUpdating = False
-        Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
-    End If
-
+'Open rtk data file
+    check_file rtk_file, "RTK data"
+    If fileprompt = vbCancel Then Exit Sub
+    Application.ScreenUpdating = False
+    Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
+    
+'XXX
+'    fileprompt = MsgBox("Use default RTK data file path? (" & rtk_file & ")", vbYesNoCancel, "RTK data source")
+'    If fileprompt = vbCancel Then Exit Sub
+'    If fileprompt = vbNo Or rtk_file = "na" Then
+'        If fileprompt = vbNo Then
+'            MsgBox "Please navigate to RTK data file", , "Select file path"
+'        Else: MsgBox "Please navigate to RTK data file", vbCritical, "Defaults file not found!"
+'        End If
+'        rtk_file = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select RTK data file")
+'    End If
+'    On Error Resume Next
+'    Application.ScreenUpdating = False
+'    Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
+'    ChDir (path) 'set default path
+'    Do While Err.Number <> 0
+'        Application.ScreenUpdating = True
+'        MsgBox "Invalid file path!" & vbCrLf & "Please navigate to RTK data file.", vbCritical, "File read error"
+'        Err.Number = 0 'reset errors
+'        rtk_file = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select RTK data file")
+'        Application.ScreenUpdating = False
+'        Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
+'    Loop
+'    On Error GoTo 0
+'XXX
+    
 'Import rtk data and close file
     rtk_book.Worksheets(1).Activate
     rtk_start = find_row(date1, "initial")
@@ -826,7 +833,7 @@ x = interp(8, offset_damping, , 0, 20) 'interpolate x-offset and easting
 x = interp(9, offset_damping, , 0, 20) 'interpolate y-offset and northing
 
 'Interpolate missing rtk data
-warn_id = interp(16, max_damping + 2, 6, 9999) 'interpolate elevation
+warn_id = interp(16, max_damping + 2, 6, 9999, 20) 'interpolate elevation
 If warn_id = 5 Then
     warn(6) = True
     warn(7) = True
