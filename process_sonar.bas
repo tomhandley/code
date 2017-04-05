@@ -11,6 +11,10 @@ Dim seconds As Long 'number of full seconds in sonar file
 Const tlen = 0.114 'transducer length from center of mounting pole to sonar projector
 Const max_z = 0.03 'maximum allowable rtk precision in z; 3 cm based on equipment limitations
 Const max_xy = 0.15 'maximum allowable rtk precision in xy; based on limiting overall uncertainty
+Const alerts = 1 'set to 0 for no alerts, 1 for major alerts only, 2 for all alerts
+Const overwrite = True 'default to overwriting existing output files
+Const save_after = True 'save file after processing
+Const showfile = True 'show completed file after processing
 'Set worksheet columns for input and output
 'Const sonar_time = 1, sonar_east = 2, sonar_north = 3, sonar_depth = 4, sonar_cog = 5
 'Const rtk_baseid = 1, rtk_pointid = 2, rtk_time = 3, rtk_north = 4, rtk_east = 5, rtk_elev = 6, rtk_horiz_prec = 7, rtk_vert_prec = 8, rtk_soln_type = 17
@@ -55,6 +59,7 @@ Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to m
 Dim out_points As Long
 
 'Read defaults from text file
+    Application.StatusBar = "Reading defaults"
     Set mybook = ActiveWorkbook
     path = mybook.FullName
     path = Left(path, InStrRev(path, "\")) 'remove filename from path string
@@ -63,6 +68,7 @@ Dim out_points As Long
     
 'Set file paths
     combo.Activate
+    Application.StatusBar = "Selecting record"
     If record = "na" Then
         fileprompt = vbNo
     Else
@@ -89,7 +95,11 @@ Dim out_points As Long
     On Error Resume Next
     IsFile = GetAttr(path & record & "_Final.xlsx")
     If IsFile Then
-        fileprompt = MsgBox(record & "_Final.xlsx already exists! Proceed with processing?", vbOKCancel, "Warning")
+        If overwrite Then
+            Application.StatusBar = record & "_Final.xlsx already exists! Proceeding with processing"
+            fileprompt = vbYes
+        Else: fileprompt = MsgBox(record & "_Final.xlsx already exists! Proceed with processing?", vbOKCancel, "Warning")
+        End If
         If fileprompt = vbCancel Then Exit Sub
     End If
     
@@ -97,6 +107,7 @@ Dim out_points As Long
     IsFile = False
     IsFile = GetAttr(path & record & ".DAT.XYZ.csv")
     If Not IsFile Then
+        Application.StatusBar = "Processing cancelled"
         fileprompt = MsgBox(record & ".DAT.XYZ.csv sonar file not found! Processing cancelled.", vbCritical, "File not found!")
         Exit Sub
     End If
@@ -111,23 +122,29 @@ Dim out_points As Long
     Next ws
 
 'Import sonar ping time stamps from IDX file
+    Application.StatusBar = "Importing sonar data..."
     sonar_import DE_file, utc_shift
     If fileprompt = vbCancel Then Exit Sub
     
 'Divide sonar data by full seconds and write to combo sheet
+    Application.StatusBar = "Writing sonar data to combo sheet"
     sonar_to_combo
 
 'Flag points listed in processing log for inspection or deletion
+    Application.StatusBar = "Flagging records"
     flag_points log_file, utc_shift
 
 'Import pertinent rtk data to rtk worksheet and insert missing data lines
+    Application.StatusBar = "Importing RTK data..."
     rtk_import rtk_file, Cells(2, 2), Cells(seconds + 1, 2)
     If fileprompt = vbCancel Then Exit Sub
 
 'Extract rtk data to combo sheet
+    Application.StatusBar = "Writing rtk data to combo sheet"
     rtk_to_combo
     
 'Interpolate gaps in rtk data
+    Application.StatusBar = "Interpolating data gaps"
     interpolate_rtk
 
 'Smooth rtk elevation points
@@ -141,17 +158,25 @@ Dim out_points As Long
 
 'Save files
 Dim SaveOn As VbMsgBoxResult
+    Application.StatusBar = False
     IO_defaults log_file, DE_file, rtk_file, "write" 'write defaults file
-    SaveOn = MsgBox("Save record and export files?", vbYesNo, "Processing Complete")
+    If save_after Then
+        SaveOn = vbYes
+    Else: SaveOn = MsgBox("Save record and export files?", vbYesNo, "Processing Complete")
+    End If
     If SaveOn = vbYes Then
         save_files
-        fileprompt = MsgBox("Record " & record & " successfully processed and saved. View processed file?", vbYesNo)
+        If showfile Then
+            fileprompt = MsgBox("Record " & record & " successfully processed and saved. View processed file?", vbYesNo)
+        Else: fileprompt = vbYes
+        End If
         'reopen blank R000XX_Final_Template
         Application.Workbooks.Open basepath & "R000XX_Final_Template.xlsm"
         If fileprompt = vbYes Then Workbooks.Open path & record & "_Final.xlsx"
         mybook.Close False 'close running workbook (now at R000XX.csv)
     Else
         MsgBox ("Record " & record & " processed but not saved or exported")
+        Application.StatusBar = "Processing complete -- files not exported"
     End If
 
 End Sub
@@ -229,12 +254,15 @@ Dim cog As Double 'course over ground
     Set rng = DE_book.Worksheets(1).Cells(1, 4).Resize(DE_book.Worksheets(1).Cells(Rows.count, "A").End(xlUp).row, 1) 'last used row
     row = Application.Match(Val(Right(record, 5)), rng, 0) 'find record number in DE_book
     fulldate = DE_book.Worksheets(1).Cells(row, 1) 'initial date from DE_book
-    If Month(fulldate) > 2 And Month(fulldate) < 11 Then
+    Stop 'xxx
+    If IsDateWithinDST(CDate(fulldate)) Then
         time_shift = 7
-    Else
-        time_shift = 8
+    Else: time_shift = 8
     End If
-    fileprompt = MsgBox("Accept time offset of UTC -" & time_shift & "?", vbYesNo, "UTC offset")
+    If alerts = 2 Then
+        fileprompt = MsgBox("Accept time offset of UTC -" & time_shift & "?", vbYesNo, "UTC offset")
+    Else: fileprompt = vbYes
+    End If
     If fileprompt = vbNo Then
         time_shift = InputBox("Set UTC time offset for date of data collection (" & Month(fulldate) & "/" & Day(fulldate) & "/" & Year(fulldate) & "). " & _
             "Set the offset to 7 for Pacific Standard Time (winter months) or 8 for Pacific Daylight Time (summer months).", _
@@ -257,7 +285,55 @@ Dim cog As Double 'course over ground
     Next row
 
 End Sub
- 
+
+Public Function IsDateWithinDST(TheDate As Date) As Boolean
+' Modified from Chip Pearson: http://www.cpearson.com/excel/DaylightSavings.htm
+' This function returns True or False indicating whether TheDate is within Daylight Savings
+' Time. If TheDate is the transition date from STD to DST, or vice versa, the continuing
+' state is assumed and a warning is output.
+Dim DstToStd As Date, StdToDst As Date
+
+' Get the transition dates DST to/from STD.
+' For 2007 and later, STD to DST occurs on the first Sunday in November at 2 AM
+DstToStd = FirstInMonth(11, Year(TheDate), vbSunday)
+' For 2007 and later, DST to STD occurs on the second Sunday in March at 2 AM
+StdToDst = FirstInMonth(3, Year(TheDate), vbSunday) + 7
+
+If (Int(TheDate) > Int(StdToDst)) And (Int(TheDate) < Int(DstToStd)) Then
+' the date is not a transition date and is within DST
+    IsDateWithinDST = True
+ElseIf (Int(TheDate) < Int(StdToDst)) And (Int(TheDate) < Int(DstToStd)) Then
+' the date is not a transition date and is NOT within DST
+    IsDateWithinDST = False
+Else
+' the date is a transition date
+    If Month(TheDate) = 3 Then
+        IsDateWithinDST = False
+    Else: IsDateWithinDST = True
+    End If
+    MsgBox "Date falls on a daylight savings transition day! Double-check time zone shift for accuracy."
+End If
+
+End Function
+
+Public Function FirstInMonth(MM As Integer, YYYY As Integer, DayOfWeek As VbDayOfWeek) As Date
+' Modified from Chip Pearson
+' This returns the first specified day of week in given Month MM of Year YYYY
+Dim FirstOfMonth As Date
+Dim DD As Long
+Dim FirstOfMonthDay As VbDayOfWeek
+
+' Get the first day of the month
+FirstOfMonth = DateSerial(YYYY, MM, 1)
+' Get the weekday (Sunday = 1, Saturday = 7)
+FirstOfMonthDay = Weekday(FirstOfMonth, vbSunday)
+' compute the Day number (1 to 7) of the first
+DD = ((DayOfWeek - FirstOfMonthDay + 7) Mod 7) + 1
+' Return the result as a date
+FirstInMonth = DateSerial(YYYY, MM, DD)
+
+End Function
+
 Private Sub sonar_to_combo()
 'Divide sonar data by full seconds and write to combo sheet
 Dim srow As Long 'cumulative number rows <= time being evaluated
@@ -412,7 +488,9 @@ Dim dt As Long
         MsgBox Prompt:="Record " & Str(record_num) & " not found in log file!", Title:="Record not found"
         Exit Sub
     Else
-        If Len(notes) > 0 Then MsgBox "Processing notes: " & notes
+        If Len(notes) > 0 Then
+            If alerts = 2 Then MsgBox "Processing notes: " & notes
+        End If
     End If
 
 'Flag records in column J on combo sheet
@@ -470,7 +548,11 @@ Dim IsFile As Boolean
     If file_path = "na" Then
         fileprompt = vbNo
         MsgBox "Defaults file not found! Please navigate to " & name & " file", vbCritical, "File read error"
-    Else: fileprompt = MsgBox("Use default " & name & " file path? (" & file_path & ")", vbYesNoCancel, name & " source")
+    Else
+        If alerts = 2 Then
+            fileprompt = MsgBox("Use default " & name & " file path? (" & file_path & ")", vbYesNoCancel, name & " source")
+        Else: fileprompt = vbYes
+        End If
     End If
     If fileprompt = vbCancel Then Exit Sub
     If fileprompt = vbNo Then file_path = Application.GetOpenFilename("Excel Workbooks (*.xls;*.xlsx),*.xls;*.xlsx", , "Select " & name & " file")
@@ -540,8 +622,10 @@ ReDim xval(1 To n)
             .a = Cells(yrow, ycol)
             .n = 1
         End With
-        MsgBox "Invalid direction passed to function regress. Direction must be passed as 1 " & _
-            "for slope from preceeding points, or -1 for slope from proceeding points. Slope set to zero.", vbOKOnly
+        If alerts = 2 Then
+            MsgBox "Invalid direction passed to function regress. Direction must be passed as 1 " & _
+              "for slope from preceeding points, or -1 for slope from proceeding points. Slope set to zero.", vbOKOnly
+        End If
         Exit Function
     End If
 
@@ -764,11 +848,15 @@ Dim dt As Integer
             End If
             If Abs(dateval - Cells(index + 1, 3)) <= 1 / 24 Then 'less than one hour gap
                 dt = Round(Abs(dateval - Cells(index + 1, 3)) * 24 * 3600, 0)
-                MsgBox ("No matching time for " & matchtype & " bound (" & dateval & ") in RTK file " & Chr(151) & _
-                    " the next closest time will be used (" & dt & " second difference)")
+                If alerts = 2 Then
+                    MsgBox ("No matching time for " & matchtype & " bound (" & dateval & ") in RTK file " & Chr(151) & _
+                      " the next closest time will be used (" & dt & " second difference)")
+                End If
             Else
-                MsgBox ("No matching time for " & matchtype & " bound (" & dateval & ") in RTK file " & Chr(151) & _
-                    " " & matchtype & " values will be extrapolated.")
+                If alerts = 2 Then
+                    MsgBox ("No matching time for " & matchtype & " bound (" & dateval & ") in RTK file " & Chr(151) & _
+                      " " & matchtype & " values will be extrapolated.")
+                End If
                 'ignore data more than an hour away from target
                 If matchtype = "initial" Then
                     index = index + 1
@@ -846,7 +934,13 @@ End If
         End If
         If Len(warning) > 1 Then warning = warning & "Check fit of extrapolated values."
     End If
-    If Len(warning) > 1 Then MsgBox warning
+    Application.StatusBar = False
+    If Len(warning) > 1 Then
+        If alerts = 2 Then
+            MsgBox warning
+        Else: Application.StatusBar = warning
+        End If
+    End If
     
 End Sub
 
@@ -1052,7 +1146,7 @@ Private Function timer(time1 As Date, time2 As Date, Optional ord As Integer = 1
 'by default evaluates to time1 minus time2, may be negative
 'if ord = -1, evaluates to time2 minus time1
     If Abs(ord) <> 1 Then
-        MsgBox ("Order of evaluation 'ord' passed to Function timer must be 1 or -1!" & vbCrLf & "Defaulting to 1")
+        If alerts = 2 Then MsgBox ("Order of evaluation 'ord' passed to Function timer must be 1 or -1!" & vbCrLf & "Defaulting to 1")
         ord = 1
     End If
     timer = ord * (Hour(time1) - Hour(time2)) * CLng(3600) + ord * (Minute(time1) - Minute(time2)) * 60 + ord * (Second(time1) - Second(time2))
