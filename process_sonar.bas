@@ -4,15 +4,17 @@ Option Explicit
 Dim basepath As String 'path to R000XX_Final_Template
 Dim path As String 'path to record
 Dim record As String 'record name
+Dim outlog As New Collection 'output information for Log sheet
 Dim fileprompt As VbMsgBoxResult
 Dim mybook As Workbook
 Dim row As Long
 Dim seconds As Long 'number of full seconds in sonar file
-Const tlen = 0.114 'transducer length from center of mounting pole to sonar projector
+Const tlen = 0.114 'transducer length in meters from center of mounting pole to sonar projector
 Const max_z = 0.03 'maximum allowable rtk precision in z; 3 cm based on equipment limitations
 Const max_xy = 0.15 'maximum allowable rtk precision in xy; based on limiting overall uncertainty
 Const alerts = 1 'set to 0 for no alerts, 1 for major alerts only, 2 for all alerts
 Const overwrite = True 'default to overwriting existing output files
+Const usedefaults = True 'use default DE and RTK file from log
 Const save_after = True 'save file after processing
 Const showfile = True 'show completed file after processing
 'Set worksheet columns for input and output
@@ -56,9 +58,15 @@ Dim IsFile As Boolean
 Dim ws As Integer
 Dim rng As Range
 Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to match rtk times (UTC)
+Dim nrtk As Long
 Dim out_points As Long
 
+Stop 'xxx
+kernel_smoothing 16, 5, "E"
+Exit Sub 'xxx
+
 'Read defaults from text file
+    outlog.Add "Processing started at " & Now
     Application.StatusBar = "Reading defaults"
     Set mybook = ActiveWorkbook
     path = mybook.FullName
@@ -78,7 +86,7 @@ Dim out_points As Long
         Exit Sub
     Else
         If fileprompt = vbYes Then
-            record = "R" & Format(Str(Int(Val(Right(record, 5)) + 1)), "00000")
+            record = "R" & Format(Str(Int(val(Right(record, 5)) + 1)), "00000")
         Else
             If dir(path) <> vbNullString Then
                 ChDir (path) 'set default path
@@ -88,6 +96,7 @@ Dim out_points As Long
             record = Left(Right(path, Len(path) - InStrRev(path, "\")), 6) 'save record from root path
             path = Left(path, InStrRev(path, "\")) 'cut filename from root path
         End If
+        outlog.Add record, , 1
     End If
     
 'Check whether R000XX_Final.xlsx already exists
@@ -97,10 +106,13 @@ Dim out_points As Long
     If IsFile Then
         If overwrite Then
             Application.StatusBar = record & "_Final.xlsx already exists! Proceeding with processing"
-            fileprompt = vbYes
+            fileprompt = vbOK
         Else: fileprompt = MsgBox(record & "_Final.xlsx already exists! Proceed with processing?", vbOKCancel, "Warning")
         End If
-        If fileprompt = vbCancel Then Exit Sub
+        If fileprompt = vbCancel Then
+            Exit Sub
+        Else: outlog.Add "File " & record & "_Final.xlsx already exists, will be overwritten"
+        End If
     End If
     
 'Check whether R000XX.DAT.XYX.csv exists (processed SonarTRX file)
@@ -112,13 +124,18 @@ Dim out_points As Long
         Exit Sub
     End If
     On Error GoTo 0
+    outlog.Add ""
+    outlog.Add "=== SONAR PROCESSING ==="
+    outlog.Add "Sonar record located at " & path & record & ".DAT.XYZ.csv"
     
 'Clear anything past header row on first four worksheets
     For ws = 1 To 5
         Set rng = Sheets(ws).UsedRange
-        Set rng = rng.Offset(1, 0).Resize(rng.Rows.count - 1)
-        rng.ClearContents
-        rng.Interior.ColorIndex = 0
+        If rng.Rows.count > 1 Then
+            Set rng = rng.Offset(1, 0).Resize(rng.Rows.count - 1)
+            rng.ClearContents
+            rng.Interior.ColorIndex = 0
+        End If
     Next ws
 
 'Import sonar ping time stamps from IDX file
@@ -136,21 +153,29 @@ Dim out_points As Long
 
 'Import pertinent rtk data to rtk worksheet and insert missing data lines
     Application.StatusBar = "Importing RTK data..."
-    rtk_import rtk_file, Cells(2, 2), Cells(seconds + 1, 2)
+    outlog.Add ""
+    outlog.Add "=== RTK PROCESSING ==="
+    rtk_import rtk_file, Cells(2, 2), Cells(seconds + 1, 2), nrtk
     If fileprompt = vbCancel Then Exit Sub
 
 'Extract rtk data to combo sheet
     Application.StatusBar = "Writing rtk data to combo sheet"
-    rtk_to_combo
+    rtk_to_combo nrtk + 1
     
 'Interpolate gaps in rtk data
     Application.StatusBar = "Interpolating data gaps"
-    interpolate_rtk
+    outlog.Add ""
+    outlog.Add "=== INTERPOLATION ==="
+    interpolate_rtk nrtk + 1
 
 'Smooth rtk elevation points
+    Stop 'xxx
     critical
 
 'Extract data to export sheet
+    outlog.Add ""
+    outlog.Add "=== EXPORT RECORDS ==="
+    outlog.Add "Export statistics:"
     export_data out_points
     
 'Update Plotting ranges
@@ -160,11 +185,14 @@ Dim out_points As Long
 Dim SaveOn As VbMsgBoxResult
     Application.StatusBar = False
     IO_defaults log_file, DE_file, rtk_file, "write" 'write defaults file
+    outlog.Add "Saved defaults"
     If save_after Then
         SaveOn = vbYes
     Else: SaveOn = MsgBox("Save record and export files?", vbYesNo, "Processing Complete")
     End If
     If SaveOn = vbYes Then
+        outlog.Add "Processing completed at " & Now
+        writelog
         save_files
         If showfile Then
             fileprompt = MsgBox("Record " & record & " successfully processed and saved. View processed file?", vbYesNo)
@@ -176,6 +204,9 @@ Dim SaveOn As VbMsgBoxResult
         mybook.Close False 'close running workbook (now at R000XX.csv)
     Else
         MsgBox ("Record " & record & " processed but not saved or exported")
+        outlog.Add "Manual file export"
+        outlog.Add "Processing completed at " & Now
+        writelog
         Application.StatusBar = "Processing complete -- files not exported"
     End If
 
@@ -189,11 +220,12 @@ Dim f As Integer 'file index number
         ChDir (path) 'set default path
         On Error Resume Next
         Open "R000XX_defaults.txt" For Input As #f
-        If Err.Number <> 0 Then
+        If Err.number <> 0 Then
             record = "na"
             log_file = "na"
             DE_file = "na"
             rtk_file = "na"
+            outlog.Add "Defaults file not found"
             Exit Sub
         End If
         On Error GoTo 0 'reset error handling
@@ -203,6 +235,7 @@ Dim f As Integer 'file index number
         Input #f, DE_file
         Input #f, rtk_file
         Close #f
+        outlog.Add "Defaults read from " & path & "R000XX_defaults.txt"
     Else 'overwrite defaults file
         ChDir (basepath) 'save in initial location
         Open "R000XX_defaults.txt" For Output As #f
@@ -242,6 +275,7 @@ Dim cog As Double 'course over ground
     ReDim idx_data(1 To fLen)
     Get f, , idx_data
     Close f
+    outlog.Add "Time offsets imported from " & path & record & "\B002.IDX"
 
 'Open data explorer file
     check_file DE_file, "Data Explorer"
@@ -249,12 +283,13 @@ Dim cog As Double 'course over ground
     Application.ScreenUpdating = False
     DoEvents 'allows macro to continue if started with hotkeys using SHIFT
     Set DE_book = Workbooks.Open(Filename:=DE_file, ReadOnly:=True)
+    outlog.Add "Data Explorer read from " & DE_file
 
 'Read data and close file
     Set rng = DE_book.Worksheets(1).Cells(1, 4).Resize(DE_book.Worksheets(1).Cells(Rows.count, "A").End(xlUp).row, 1) 'last used row
-    row = Application.Match(Val(Right(record, 5)), rng, 0) 'find record number in DE_book
+    row = Application.Match(val(Right(record, 5)), rng, 0) 'find record number in DE_book
+    outlog.Add "Matching record found on row " & row & " of Data Explorer"
     fulldate = DE_book.Worksheets(1).Cells(row, 1) 'initial date from DE_book
-    Stop 'xxx
     If IsDateWithinDST(CDate(fulldate)) Then
         time_shift = 7
     Else: time_shift = 8
@@ -269,6 +304,8 @@ Dim cog As Double 'course over ground
             "Set UTC offset", IIf(time_shift = 7, 8, 7))
     End If
     fulldate = fulldate + DE_book.Worksheets(1).Cells(row, 6) + time_shift / 24  'Shift times forward or back for UTC correction
+    outlog.Add "Sonar log from " & Format(fulldate - time_shift / 24, "mm/dd/yyyy hh:mm:ss") & " (local time)"
+    outlog.Add "Timestamps adjusted to UTC from zone UTC-" & time_shift
     DE_book.Close
     Set dat_book = Workbooks.Open(Filename:=path & record & ".DAT.XYZ.csv", ReadOnly:=True)
     For row = 0 To fLen \ 8 - 1 'backslash operator is integer division
@@ -283,6 +320,7 @@ Dim cog As Double 'course over ground
     For row = 1 To fLen \ 8 - 1
         sonar.Cells(row + 1, 5) = get_cog(sonar.Cells(row + 1, 2), sonar.Cells(row + 2, 2), sonar.Cells(row + 1, 3), sonar.Cells(row + 2, 3))
     Next row
+    outlog.Add row - 1 & " sonar pings imported"
 
 End Sub
 
@@ -405,6 +443,7 @@ Dim r As linear 'regression values
         r = regress(i - 1, 6, 5, , , row)
         Cells(i, 6) = r.a + r.b * (1 + r.n)
     End If
+    outlog.Add " - " & seconds & " seconds of sonar data extracted"
 
 End Sub
 
@@ -447,12 +486,18 @@ Dim dt As Long
     On Error Resume Next
     Open log_file For Binary As #f
     ChDir (path) 'set default path
-    Do While Err.Number <> 0
+    Do While Err.number <> 0
         response = MsgBox("Log file not found! Select a new log file?", vbYesNo, "File not found")
-        If response = vbNo Then Exit Sub
-        Err.Number = 0
+        If response = vbNo Then
+            outlog.Add "Log file not found"
+            Exit Sub
+        End If
+        Err.number = 0
         log_file = Application.GetOpenFilename("Text Files (*.txt),*txt", , "Select log file")
-        If log_file = "" Then Exit Sub
+        If log_file = "" Then
+            outlog.Add "Log file not found"
+            Exit Sub
+        End If
         Open log_file For Binary As #f
     Loop
     On Error GoTo 0
@@ -465,7 +510,7 @@ Dim dt As Long
 'Identify pertinent log data records
     row = 0
     notes = "x"
-    record_num = CStr(Val(Right(record, 5)))
+    record_num = CStr(val(Right(record, 5)))
     Do While row <= UBound(log_data)
         dash = InStr(1, log_data(row), " ")
         If dash = 0 Then count = Len(log_data(row)) Else count = dash - 1
@@ -484,12 +529,16 @@ Dim dt As Long
         End If
         row = row + 1
     Loop
+    outlog.Add "Log file located at " & path & log_file
     If notes = "x" Then
-        MsgBox Prompt:="Record " & Str(record_num) & " not found in log file!", Title:="Record not found"
+        If alerts = 2 Then MsgBox Prompt:="Record " & record_num & _
+          " not found in log file!", Title:="Record not found"
+        outlog.Add " - Record " & record_num & " not found in log file"
         Exit Sub
     Else
         If Len(notes) > 0 Then
             If alerts = 2 Then MsgBox "Processing notes: " & notes
+            outlog.Add " - Notes: " & notes
         End If
     End If
 
@@ -497,7 +546,7 @@ Dim dt As Long
     start_time = combo.Cells(2, 2) - Int(combo.Cells(2, 2))
     On Error Resume Next
     For Each entry In log_row
-        Err.Number = 0
+        Err.number = 0
         op = Left(entry, 1)
         dash = InStr(3, entry, "-")
         If dash > 0 Then
@@ -517,12 +566,13 @@ Dim dt As Long
         Else 'single point to flag
             t2 = t1
         End If
-        If Err.Number = 0 Then
+        If Err.number = 0 Then
             dt = timer(t2, t1) + 1
             count = timer(t1, start_time)
             If t1 < start_time Or dt + count > seconds Or (t2 < t1 And Hour(t2) <> 0) Then
                 MsgBox "Problem reading log entry: '" & entry & "'" & vbCrLf & _
                   "Times outside of record bounds -- record skipped.", vbCritical, "Log file record error"
+                outlog.Add " - OUT OF BOUNDS: " & entry
             Else
                 combo.Cells(2, 10).Offset(count).Resize(dt) = op
                 'Update plot ranges
@@ -530,10 +580,12 @@ Dim dt As Long
                     plotdata.Cells(2, 1).Offset(count).Resize(dt) = 1
                 Else: plotdata.Cells(2, 2).Offset(count).Resize(dt) = 1
                 End If
+                outlog.Add " - PROCESSED: " & entry
             End If
         Else
             MsgBox "Problem reading log entry: '" & entry & "'" & vbCrLf & _
               "Invalid time format -- record skipped.", vbCritical, "Log file record error"
+            outlog.Add " - INVALID: " & entry
         End If
     Next entry
     On Error GoTo 0
@@ -549,7 +601,7 @@ Dim IsFile As Boolean
         fileprompt = vbNo
         MsgBox "Defaults file not found! Please navigate to " & name & " file", vbCritical, "File read error"
     Else
-        If alerts = 2 Then
+        If Not usedefaults Then
             fileprompt = MsgBox("Use default " & name & " file path? (" & file_path & ")", vbYesNoCancel, name & " source")
         Else: fileprompt = vbYes
         End If
@@ -680,7 +732,7 @@ ReDim xval(1 To n)
 
 End Function
 
-Private Sub rtk_import(ByRef rtk_file As String, date1 As Date, date2 As Date)
+Private Sub rtk_import(ByRef rtk_file As String, date1 As Date, date2 As Date, ByRef nrecords As Long)
 'Import rtk data to rtk worksheet, delete duplicate entries, and insert missing rows
 Dim rng As Range
 Dim rtk_book As Workbook
@@ -692,13 +744,17 @@ Dim dt As Long
     If fileprompt = vbCancel Then Exit Sub
     Application.ScreenUpdating = False
     Set rtk_book = Workbooks.Open(Filename:=rtk_file, ReadOnly:=True)
+    outlog.Add "RTK record located at " & rtk_file
     
 'Import rtk data and close file
     rtk_book.Worksheets(1).Activate
     rtk_start = find_row(date1, "initial")
     rtk_end = find_row(date2, "final")
+    nrecords = rtk_end - rtk_start + 1
+    outlog.Add nrecords & " RTK records imported"
+    outlog.Add "RTK rows " & rtk_start & " to " & rtk_end
     'copy data from rtk_book
-    mybook.Worksheets("RTK").Range("A2:Q" & 2 + rtk_end - rtk_start).Value = rtk_book.Worksheets(1).Range("A" & rtk_start & ":Q" & rtk_end).Value
+    mybook.Worksheets("RTK").Cells(2, 1).Resize(nrecords, 17).Value = rtk_book.Worksheets(1).Cells(rtk_start, 1).Resize(nrecords, 17).Value
     Application.DisplayAlerts = False 'prevent "Save changes" dialog
     rtk_book.Close
     Application.DisplayAlerts = True
@@ -707,12 +763,14 @@ Dim dt As Long
 
 End Sub
 
-Private Sub rtk_to_combo()
+Private Sub rtk_to_combo(maxrow As Long)
 'Write rtk data to Combo worksheet
 'assumes rtk data are already adjusted to xyz-position at base of pipe and level of sonar emitter
 Dim combo_row As Long
 Dim rtk_row As Long
 Dim dt As Long 'number of seconds elapsed between two records
+Dim stats() As Long
+Dim i As Integer
 Dim cog As Double 'course over ground
 Dim count As Long
 Dim avg As Double
@@ -720,11 +778,18 @@ Dim r As linear 'store regression values
 Dim rtk_x As Double
 Dim rtk_y As Double
 Dim increment As Long
+ReDim stats(0 To 5) 'statistics: duplicates, multi-point per second, fixed xy & z, float z, float xy & z, missing points
+Const n = 5 'number of points to calculate COG regression through
 
+outlog.Add "Transducer length set to " & tlen & " meters"
+outlog.Add "COG regression through " & n & " valid points"
 combo.Activate
 'Import data from rtk sheet, averaging records and leaving gaps as needed
     combo_row = 2
     rtk_row = 2
+    For i = 0 To 5
+        stats(i) = 0
+    Next i
     Do Until timer(rtk.Cells(rtk_row, 3), Cells(combo_row, 2)) >= 0 'increment rtk_row until rtk time >= sonar time
         rtk_row = rtk_row + 1
     Loop
@@ -733,73 +798,92 @@ combo.Activate
         If dt = 0 Then 'rtk and sonar times match
             If rtk.Cells(rtk_row + 1, 4) = rtk.Cells(rtk_row, 4) And rtk.Cells(rtk_row + 1, 5) = rtk.Cells(rtk_row, 5) Then 'no change in position
                 rtk_row = rtk_row + 1 'skip over duplicate position, occasionally happens after gap in rtk record
-            Else 'average one or more rtk records with matching time and write data to Combo sheet
-                Cells(combo_row, 12) = rtk.Cells(rtk_row, 3) 'rtk time
-                count = 1
+                stats(0) = stats(0) + 1
+            End If
+            'average one or more rtk records with matching time and write data to Combo sheet
+            Cells(combo_row, 12) = rtk.Cells(rtk_row, 3) 'rtk time
+            count = 1
+            If rtk_row + count < maxrow Then
                 Do While timer(rtk.Cells(rtk_row + count, 3), rtk.Cells(rtk_row, 3)) = 0
                     count = count + 1
+                    If rtk_row + count = maxrow Then Exit Do
                 Loop
-                cog = 9999 'initialize to invalid value to test for changes
-                avg = WorksheetFunction.Average(rtk.Cells(rtk_row, 7).Resize(count)) 'stdev_xy
-                If avg <= max_xy Then 'horizontal precision OK
-                    Cells(combo_row, 11) = rtk.Cells(rtk_row, 2) 'point id
-                    Cells(combo_row, 20) = avg 'stdev_xy
-'XXXX this calculates cog between averaged positions, could split up to partial second positions for higher accuracy
+                If count > 1 Then stats(1) = stats(1) + 1
+            End If
+            cog = 9999 'initialize to invalid value to test for changes
+            avg = WorksheetFunction.Average(rtk.Cells(rtk_row, 7).Resize(count)) 'stdev_xy
+            If avg <= max_xy Then 'horizontal precision OK
+                Cells(combo_row, 11) = rtk.Cells(rtk_row, 2) 'point id
+                Cells(combo_row, 20) = avg 'stdev_xy
+'XXXX this calculates cog between the previous averaged position and the next single point (not averaged)
 'XXXX update to:
 'XXXX 1. load cog for each pair in an array
 'XXXX 2. correct x and y by cog in an array
 'XXXX 3. average the updated x and y values and output
-                    'calculate cog_rtk, northing and easting
-                    If rtk.Cells(rtk_row + 1, 7) <= max_xy And timer(rtk.Cells(rtk_row + count + 1, 3), rtk.Cells(rtk_row, 3)) <= 5 Then
+                'calculate cog_rtk, northing and easting
+                
+                If rtk_row + 1 < maxrow Then
+                    If rtk.Cells(rtk_row + 1, 7) <= max_xy And timer(rtk.Cells(rtk_row + 1, 3), rtk.Cells(rtk_row, 3)) <= 5 Then
                     'next horizontal precision is OK and within 5 seconds: calculate cog between two valid points
                         cog = get_cog(rtk.Cells(rtk_row, 5), rtk.Cells(rtk_row + 1, 5), rtk.Cells(rtk_row, 4), rtk.Cells(rtk_row + 1, 4))
-                    Else 'no second point: calculate cog from slope of valid points above
-                        dt = timer(Cells(combo_row, 2), rtk.Cells(rtk_row - 1, 3)) 'time to previous point
-                        If combo_row - dt > 2 And dt <= 5 Then 'point within 5 sec has valid cog
-                            r = regress(combo_row - dt, 15, 5, , 15) 'regression through last five valid cogs
-                            cog = r.a + r.b * (1 + r.n) 'y = a + bx
-                        Else
-                            cog = Cells(combo_row, 6)
-                        End If
                     End If
-                    If cog <> 9999 Then 'check if cog was calculated
-                        Cells(combo_row, 15) = cog 'cog_rtk
-                        'use xy-position and cog to offset transducer
-                        rtk_x = WorksheetFunction.Average(rtk.Cells(rtk_row, 5).Resize(count)) + Sin(WorksheetFunction.Pi / 180 * cog) * tlen
-                        rtk_y = WorksheetFunction.Average(rtk.Cells(rtk_row, 4).Resize(count)) - Cos(WorksheetFunction.Pi / 180 * cog) * tlen
-                        Cells(combo_row, 8) = rtk_x - Cells(combo_row, 4) 'x-offset = rtk_x - sonar_x
-                        Cells(combo_row, 9) = rtk_y - Cells(combo_row, 5) 'y-offset = rtk_y - sonar_y
-                        Cells(combo_row, 14) = rtk_x 'easting
-                        Cells(combo_row, 13) = rtk_y 'northing
-                    End If
-                    avg = WorksheetFunction.Average(rtk.Cells(rtk_row, 8).Resize(count))
-                    If avg <= max_z And combo.Cells(combo_row, 10) <> "d" Then
-                    'both horizontal and vertical precision OK
-                        Cells(combo_row, 16) = WorksheetFunction.Average(rtk.Cells(rtk_row, 6).Resize(count)) 'elevation
-                        Cells(combo_row, 21) = WorksheetFunction.Average(rtk.Cells(rtk_row, 8).Resize(count)) 'stdev_z
-                        Cells(combo_row, 22) = rtk.Cells(rtk_row, 17) 'solution type
-                    Else
-                    'only horizontal precision OK
-                        Cells(combo_row, 21) = max_z 'stdev_z set to max for later smoothing
-                        Cells(combo_row, 22) = "Float,Horizontal" 'solution type
-                    End If
-                Else
-                'neither horizontal nor vertial precision OK
-                    Cells(combo_row, 20) = "> " & Format(Str(max_xy), "0.00") 'stdev_xy
-                    Cells(combo_row, 21) = max_z 'stdev_z set to max for later smoothing
-                    Cells(combo_row, 22) = "None,Interpolated"  'solution type
                 End If
-                rtk_row = rtk_row + count
+                If cog = 9999 Then
+                    dt = timer(Cells(combo_row, 2), rtk.Cells(rtk_row - 1, 3)) 'time to previous point
+                    If combo_row - dt > 2 And dt <= 5 Then 'point within 5 sec has valid cog
+                        r = regress(combo_row - dt, 15, n, , 15) 'regression through n valid cogs
+                        cog = r.a + r.b * (1 + r.n) 'y = a + bx
+                    Else
+                        cog = Cells(combo_row, 6)
+                    End If
+                End If
+                
+                Cells(combo_row, 15) = cog 'cog_rtk
+                'use xy-position and cog to offset transducer
+                rtk_x = WorksheetFunction.Average(rtk.Cells(rtk_row, 5).Resize(count)) + Sin(WorksheetFunction.Pi / 180 * cog) * tlen
+                rtk_y = WorksheetFunction.Average(rtk.Cells(rtk_row, 4).Resize(count)) - Cos(WorksheetFunction.Pi / 180 * cog) * tlen
+                Cells(combo_row, 8) = rtk_x - Cells(combo_row, 4) 'x-offset = rtk_x - sonar_x
+                Cells(combo_row, 9) = rtk_y - Cells(combo_row, 5) 'y-offset = rtk_y - sonar_y
+                Cells(combo_row, 14) = rtk_x 'easting
+                Cells(combo_row, 13) = rtk_y 'northing
+                
+                avg = WorksheetFunction.Average(rtk.Cells(rtk_row, 8).Resize(count))
+                If avg <= max_z And combo.Cells(combo_row, 10) <> "d" Then
+                'both horizontal and vertical precision OK
+                    stats(2) = stats(2) + 1
+                    Cells(combo_row, 16) = WorksheetFunction.Average(rtk.Cells(rtk_row, 6).Resize(count)) 'elevation
+                    Cells(combo_row, 21) = WorksheetFunction.Average(rtk.Cells(rtk_row, 8).Resize(count)) 'stdev_z
+                    Cells(combo_row, 22) = rtk.Cells(rtk_row, 17) 'solution type
+                Else
+                'only horizontal precision OK
+                    stats(3) = stats(3) + 1
+                    Cells(combo_row, 21) = max_z 'stdev_z set to max for later smoothing
+                    Cells(combo_row, 22) = "Float,Horizontal" 'solution type
+                End If
+            Else
+            'neither horizontal nor vertial precision OK
+                stats(4) = stats(4) + 1
+                Cells(combo_row, 20) = "> " & Format(Str(max_xy), "0.00") 'stdev_xy
+                Cells(combo_row, 21) = max_z 'stdev_z set to max for later smoothing
+                Cells(combo_row, 22) = "None,Interpolated"  'solution type
             End If
+            rtk_row = rtk_row + count
             count = 1 'use for incrementing combo_row
         Else 'dt > 0 --> gap in rtk record, fill with time and basic "no data" info for later interpolation
             count = WorksheetFunction.Min(dt, seconds + 2 - combo_row) 'limit data to seconds + 1 row
             Cells(combo_row, 2).Resize(count).Copy Cells(combo_row, 12)
+            stats(5) = stats(5) + count
         End If
         Cells(combo_row, 18).Resize(count).FormulaR1C1 = "=RC[-2] - RC[3]"  'min = elev - stdev_z
         Cells(combo_row, 19).Resize(count).FormulaR1C1 = "=RC[-3] + RC[2]"  'max = elev + stdev_z
         combo_row = combo_row + count
     Loop
+    outlog.Add " - " & stats(0) & " duplicates skipped"
+    outlog.Add " - " & stats(1) & " full-second records with multiple data points"
+    outlog.Add " - " & stats(2) & " seconds with fixed xy and z accuracy"
+    outlog.Add " - " & stats(3) & " seconds with fixed xy accuracy only"
+    outlog.Add " - " & stats(4) & " seconds with float xy and z accuracy"
+    outlog.Add " - " & stats(5) & " seconds with no data points"
 End Sub
 
 Private Function get_cog(x1, x2, y1, y2) As Double
@@ -808,7 +892,7 @@ Private Function get_cog(x1, x2, y1, y2) As Double
 Dim cog As Double
     On Error Resume Next 'no change in position results in division by zero error (Err.Number = 11)
     cog = WorksheetFunction.Atan2(x2 - x1, y2 - y1)
-    If Err.Number <> 0 Then cog = 0 'set cog to 0 for static position
+    If Err.number <> 0 Then cog = 0 'set cog to 0 for static position
     On Error GoTo 0 'reset error handling
     cog = cog * 180 / WorksheetFunction.Pi + 270 'switch to coordinates in zero degrees North
     If cog >= 360 Then cog = cog - 360 'force 0 <= cog < 360
@@ -857,11 +941,6 @@ Dim dt As Integer
                     MsgBox ("No matching time for " & matchtype & " bound (" & dateval & ") in RTK file " & Chr(151) & _
                       " " & matchtype & " values will be extrapolated.")
                 End If
-                'ignore data more than an hour away from target
-                If matchtype = "initial" Then
-                    index = index + 1
-                Else: index = index - 1
-                End If
             End If
         End If
     Else 'check for repeating values of same second (can occur when rtk collects data @ 1/m)
@@ -876,12 +955,14 @@ Dim dt As Integer
     find_row = index + 1 'set value to actual worksheet row number
 End Function
 
-Private Sub interpolate_rtk()
+Private Sub interpolate_rtk(maxrow As Long)
 'Interpolate missing rtk xy-position based on linear offset from sonar xy-position,
 'Interpolate missing rtk z linearly
 'xy-positions and offsets were previously corrected for course over ground,
 '  so interpolated positions do not need to be corrected again
 Dim x As Integer
+Dim damping As Integer
+Dim win As Integer
 Dim warn_id As Integer
 Dim warn() As Boolean 'record of interpolated and extrapolated areas for message output
 Dim warning As String 'warning message for output
@@ -889,12 +970,21 @@ ReDim warn(1 To 7)
 Const offset_damping = 10 'number of seconds to dampen x-, y- and z-offset trends on log scale before they reach zero
 Const max_damping = 5 'number of seconds to transition from interpolated values of stdev_xy and stdev_z before reaching the maximum
 
+
 'Interpolate northing and easting
-x = interp(8, offset_damping, , 9999, 20) 'interpolate x-offset and easting
-x = interp(9, offset_damping, , 9999, 20) 'interpolate y-offset and northing
+damping = offset_damping
+win = 20
+x = interp(8, damping, maxrow, 11, , 9999, win) 'interpolate x-offset and easting
+x = interp(9, damping, maxrow, 11, , 9999, win) 'interpolate y-offset and northing
+outlog.Add "X- and Y-offsets interpolated with damping_interval = " & damping & ", limit_val = use_avg, window = " & win
 
 'Interpolate missing rtk data
-warn_id = interp(16, max_damping + 2, 6, 9999, 20) 'interpolate elevation
+damping = max_damping + 2
+outlog.Add "Elevation data gaps larger than damping_interval:"
+x = outlog.count
+win = 10
+warn_id = interp(16, damping, maxrow, , 6, 9999, win) 'interpolate elevation
+outlog.Add "Elevation interpolated with damping_interval = " & damping & ", limit_val = use_avg, window = " & win, , x
 If warn_id = 5 Then
     warn(6) = True
     warn(7) = True
@@ -902,8 +992,12 @@ ElseIf warn_id > 0 Then
     warn(warn_id + 3) = True
 End If
 If warn_id = 0 Or warn_id > 2 Then
-    x = interp(20, max_damping, 7, max_xy, 50) 'interpolate stdev_xy
-    x = interp(21, max_damping, 8, max_z, 50) 'interpolate stdev_z
+    damping = max_damping
+    win = 25
+    x = interp(20, damping, maxrow, , 7, max_xy, win) 'interpolate stdev_xy
+    x = interp(21, damping, maxrow, , 8, max_z, win) 'interpolate stdev_z
+    outlog.Add "Stdev_XY interpolated with damping_interval = " & damping & ", limit_val = max_xy, window = " & win
+    outlog.Add "Stdev_Z interpolated with damping_interval = " & damping & ", limit_val = max_z, window = " & win
 ElseIf warn_id = 1 Then
     Cells(2, 20).Resize(seconds) = ">" & max_xy
     Cells(2, 21).Resize(seconds) = max_z
@@ -940,11 +1034,12 @@ End If
             MsgBox warning
         Else: Application.StatusBar = warning
         End If
+        outlog.Add "Warnings: " & warning
     End If
     
 End Sub
 
-Private Function interp(icol As Integer, damping_interval As Integer, Optional rtk_col As Integer = 0, Optional limit_val As Single = -1, Optional window As Integer = 50) As Integer
+Private Function interp(icol As Integer, damping_interval As Integer, maxrow As Long, Optional check_col As Integer = 0, Optional rtk_col As Integer = 0, Optional limit_val As Single = -1, Optional window As Integer = 50) As Integer
 'Interpolate gaps in input column
 'Outputs an identifier depending on which data are missing
 '   0: all data present
@@ -957,6 +1052,7 @@ Private Function interp(icol As Integer, damping_interval As Integer, Optional r
 'damping_interval is the number of seconds to use log-dampened weighting of interpolated value before it becomes constant at limit_val
 '   gaps smaller than damping_interval are interpolated with no damping
 '   damping_interval * 2 is also used as the maximum time in seconds to interpolate from rtk records beyond the ends instead of using slope trends
+'check_col is the column to check for valid values before regression, defaults to icol
 'rtk_col is the column with matching data in the rtk sheet
 '   if none is specified, extrapolation will be based on regression of slope of change in values only
 'limit_val is the value, if any, that the column data will approach over damping_interval number of seconds
@@ -982,6 +1078,7 @@ Dim shift As Integer
 Dim limit As linear 'store slope and intercept of slope between averaged limits for middle gaps
 
 warn_id = 0
+If check_col = 0 Then check_col = icol
 If limit_val = 9999 Then use_avg = True Else use_avg = False
 i = 2
 Do While i <= seconds + 1
@@ -995,7 +1092,7 @@ Do While i <= seconds + 1
         'set interpolation parameters
         If count = seconds Then 'no data for whole record
             'check starting rtk values
-            rtk_row = rtk.Cells(Rows.count, "B").End(xlUp).row 'last used row in rtk worksheet
+            rtk_row = maxrow 'last used row in rtk worksheet
             dt = timer(rtk.Cells(rtk_row, 3), rtk.Cells(2, 3))
             If dt <= 7200 And rtk_col > 0 Then 'less than two hours between known rtk end points
                 warn_id = 1
@@ -1037,7 +1134,7 @@ Do While i <= seconds + 1
                 End If
                 If extra Then
                     'extrapolate beyond known points
-                    r = regress(target, icol, window, dir, 11) 'regression through window size number of non-blank points
+                    r = regress(target, icol, window, dir, check_col) 'regression through window size number of non-blank points
                 Else
                     'set slope to interpolate from known point in rtk sheet
                     r.b = (dir * (Cells(target, icol) - rtk.Cells(rtk_row, rtk_col))) / dt
@@ -1052,11 +1149,23 @@ Do While i <= seconds + 1
         'adjust limit values
         limit.b = 0
         If use_avg And count >= damping_interval Then
-            limit.a = midmean(window, target, icol, -dir, 11)
+            limit.a = midmean(window, target, icol, -dir, check_col)
             If i > 2 And warn_id < 4 Then
-                limit.b = (midmean(window, target + count + 1, icol, 1, 11) - limit.a) / (count + 1)
+                limit.b = (midmean(window, target + count + 1, icol, 1, check_col) - limit.a) / (count + 1)
             End If
-        Else: limit.a = limit_val
+            If icol = 16 Then
+                outlog.Add " - ID " & i - 1 & ", " & count & "s, " & _
+                  IIf(extra, "extrapolated, limit_val from avg = " & Format(limit.a, "0.000"), _
+                  "interpolated with limit_val from avg " & Format(limit.a, "0.000") & _
+                  " to " & Format(limit.a + limit.b * (count + 1), "0.000"))
+            End If
+        Else
+            limit.a = limit_val
+            If icol = 16 And count >= damping_interval Then
+                outlog.Add " - ID " & i - 1 & ", " & count & "s, " & _
+                  IIf(extra, "extrapolated, limit_val = " & Format(limit.a, "0.000"), _
+                  "interpolated with limit_val = " & Format(limit.a, "0.000"))
+            End If
         End If
 
         'interpolate empty cells
@@ -1108,7 +1217,7 @@ Private Function midmean(maxcount As Integer, vrow As Long, vcol As Integer, Opt
 'Calculate average of maxcount values in column vcol both above and below row vrow (inclusive)
 'dir is the direction to search, -1 for up, 1 for down, or 0 for both
 'if check_col is passed, only count values when check_col is not empty
-Dim k As Integer
+Dim K As Integer
 Dim n1 As Integer
 Dim n2 As Integer
 
@@ -1118,22 +1227,22 @@ n1 = 0
 n2 = 0
 
 If dir <= 0 Then
-    k = 0
-    Do While k < maxcount And vrow - k > 2
-        k = k + 1
-        If Cells(vrow - k, check_col) <> "" And Cells(vrow - k, vcol) <> "" Then
+    K = 0
+    Do While K < maxcount And vrow - K > 2
+        K = K + 1
+        If Cells(vrow - K, check_col) <> "" And Cells(vrow - K, vcol) <> "" Then
             n1 = n1 + 1
-            midmean = midmean + Cells(vrow - k, vcol)
+            midmean = midmean + Cells(vrow - K, vcol)
         End If
     Loop
 End If
 If dir >= 0 Then
-    k = 0
-    Do While k < maxcount And vrow + k <= seconds
-        k = k + 1
-        If Cells(vrow + k, check_col) <> "" Then
+    K = 0
+    Do While K < maxcount And vrow + K <= seconds
+        K = K + 1
+        If Cells(vrow + K, check_col) <> "" Then
             n2 = n2 + 1
-            midmean = midmean + Cells(vrow + k, vcol)
+            midmean = midmean + Cells(vrow + K, vcol)
         End If
     Loop
 End If
@@ -1142,53 +1251,161 @@ midmean = midmean / (n1 + n2 + 1)
 End Function
 
 Private Function timer(time1 As Date, time2 As Date, Optional ord As Integer = 1) As Long
-'Evaluate time difference in seconds between to dates
+'Evaluate time difference in seconds between two dates
 'by default evaluates to time1 minus time2, may be negative
 'if ord = -1, evaluates to time2 minus time1
     If Abs(ord) <> 1 Then
         If alerts = 2 Then MsgBox ("Order of evaluation 'ord' passed to Function timer must be 1 or -1!" & vbCrLf & "Defaulting to 1")
         ord = 1
     End If
-    timer = ord * (Hour(time1) - Hour(time2)) * CLng(3600) + ord * (Minute(time1) - Minute(time2)) * 60 + ord * (Second(time1) - Second(time2))
-    If ord * (Hour(time1) - Hour(time2)) < 0 Then 'Check for UTC time passing midnight
-        timer = timer + 24 * CLng(3600)
-    End If
+    timer = ord * (time1 - time2) * 24 * 3600
 End Function
+
+'XXXXXX
+'Private Sub critical()
+''Identify critical points in elevation and interpolate linearly
+''between critical points. Points are stored in crit() with values
+''in z(), which could be passed as arguments to a more sophisticated
+''interpolation technique such as splining.
+'Dim zmin() As Variant, zmax() As Variant 'min/max possible elevation from RTK
+'Dim k As Integer
+'Dim maxi As Integer, maxj As Integer
+'Dim i As Long, j As Long
+'Dim z() As Double 'stores values of critical points
+'Dim crit() As Integer 'stores indices of critical points
+'Dim critChange As Boolean
+'Dim m As Double, b As Double
+'ReDim zmin(1 To seconds)
+'ReDim zmax(1 To seconds)
+'ReDim z(1 To seconds)
+'ReDim crit(1 To seconds)
+'
+'zmin() = Application.Transpose(Cells(2, 18).Resize(seconds))
+'zmax() = Application.Transpose(Cells(2, 19).Resize(seconds))
+'
+''Determine which starting value stays within min/max bounds the longest
+'    maxi = 0
+'    For i = 0 To 9 'test 10 starting values ranging from zmin to zmax
+'        z(1) = (zmax(1) - zmin(1)) / 9 * i + zmin(1)
+'        j = 2
+'        Do While z(1) >= zmin(j) And z(1) <= zmax(j)
+'            j = j + 1
+''xxx            zmin(j) = Cells(j + 1, 18)
+''xxx            zmax(j) = Cells(j + 1, 19)
+'        Loop
+'        If j > maxj Then
+'            maxj = j
+'            maxi = i
+'        Else
+'            If j = maxj And Abs(i - 4.5) < Abs(maxi - 4.5) Then 'where two j's are equivalent, choose i closer to the middle
+'                maxi = i
+'            End If
+'        End If
+'    Next i
+'    'set z(1) to best starting value
+'    z(1) = (zmax(1) - zmin(1)) / 9 * maxi + zmin(1)
+'
+''Initialize
+'    crit(1) = 1
+'    k = 2
+''xxx    Cells(2, 17) = z(1) 'initial smoothed value
+'
+''Find critical points and interpolate between
+'For i = 2 To seconds
+'    critChange = False
+'    'check if last critical value exceeds current max or min
+'    If z(crit(k - 1)) > zmax(i) Then
+'        'reset k for two consecutive decreasing critical values
+'        If crit(k - 1) = i - 1 And (z(i - 1) = zmax(i - 1) And i > maxi) Then k = k - 1
+'        z(i) = zmax(i)
+'        crit(k) = i
+'        critChange = True
+'    ElseIf z(crit(k - 1)) < zmin(i) Then
+'        'reset k for two consecutive increasing critical values
+'        If crit(k - 1) = i - 1 And (z(i - 1) = zmin(i - 1) And i > maxi) Then k = k - 1
+'        Do While zmin(i + count) > zmin(i) And i <= seconds
+'            i = i + 1
+'        Loop
+'        z(i) = zmin(i)
+'        crit(k) = i
+'        critChange = True
+'    ElseIf i = seconds Then
+'        'extrapolate for tail values after last critical point
+'        '  only if z(seconds) is not already a critical point
+'        z(i) = m * i + b
+'        crit(k) = seconds
+'        critChange = True
+'    End If
+'
+'    'check if linear interpolation violates min/max boundaries
+'    If critChange Then
+'        m = (z(i) - z(crit(k - 1))) / (crit(k) - crit(k - 1))
+'        b = z(i) - m * crit(k)
+'        For j = crit(k - 1) + 1 To crit(k) - 1
+'            If j = i Then 'exit loop when i has been reset to lesser value (boundaries were violated)
+'                Exit For
+'            End If
+'            z(j) = m * j + b
+'            If z(j) > zmax(j) Then
+'                z(j) = zmax(j)
+'                crit(k) = j
+'                maxi = i
+'                i = j
+'                m = (z(j) - z(crit(k - 1))) / (crit(k) - crit(k - 1))
+'                b = z(j) - m * crit(k)
+'                j = crit(k - 1)
+'            ElseIf z(j) < zmin(j) Then
+'                z(j) = zmin(j)
+'                crit(k) = j
+'                maxi = i
+'                i = j
+'                j = crit(k - 1)
+'                m = (z(i) - z(j)) / (crit(k) - j)
+'                b = z(i) - m * crit(k)
+'            End If
+''xxx            Cells(j + 1, 17) = z(j)
+'        Next j
+'        k = k + 1
+'    End If
+''xxx    Cells(i + 1, 17) = z(i)
+'Next i
+'Cells(2, 17).Resize(seconds) = Application.Transpose(z(i))
+'
+'End Sub
+'XXXXXX
 
 Private Sub critical()
 'Identify critical points in elevation and interpolate linearly
 'between critical points. Points are stored in crit() with values
-'in yc(), which could be passed as arguments to a more sophisticated
+'in z(), which could be passed as arguments to a more sophisticated
 'interpolation technique such as splining.
-Dim zmin(), zmax() As Single 'min/max possible elevation from RTK
-Dim k, maxi, maxj As Integer
-Dim i, j As Long
-Dim z() As Single 'stores values of critical points
-Dim crit() As Integer 'stores indices of critical points
-Dim critChange As Boolean
-Dim m, b As Single
+Dim zmin() As Variant, zmax() As Variant 'min/max possible elevation from RTK
+Dim i As Long, j As Long
+Dim maxi As Integer, maxj As Integer
+Dim m As Double 'slope
+Dim z() As Double 'stores values of critical points
+Dim crit As New Collection 'stores indices of critical points
+Dim c1 As Long, c2 As Long, c As Long
 ReDim zmin(1 To seconds)
 ReDim zmax(1 To seconds)
 ReDim z(1 To seconds)
-ReDim crit(1 To seconds)
+
+zmin = Application.Transpose(Cells(2, 18).Resize(seconds).Value)
+zmax = Application.Transpose(Cells(2, 19).Resize(seconds).Value)
 
 'Determine which starting value stays within min/max bounds the longest
-    zmin(1) = Range("R2")
-    zmax(1) = Range("S2")
-    zmin(2) = Range("R3")
-    zmax(2) = Range("S3")
     maxi = 0
+    maxj = 0
+    m = (zmax(1) - zmin(1)) / 9
     For i = 0 To 9 'test 10 starting values ranging from zmin to zmax
-        z(1) = (zmax(1) - zmin(1)) / 9 * i + zmin(1)
+        z(1) = m * i + zmin(1)
         j = 2
         Do While z(1) >= zmin(j) And z(1) <= zmax(j)
             j = j + 1
-            zmin(j) = Cells(j + 1, 18)
-            zmax(j) = Cells(j + 1, 19)
         Loop
         If j > maxj Then
-            maxj = j
             maxi = i
+            maxj = j
         Else
             If j = maxj And Abs(i - 4.5) < Abs(maxi - 4.5) Then 'where two j's are equivalent, choose i closer to the middle
                 maxi = i
@@ -1196,80 +1413,182 @@ ReDim crit(1 To seconds)
         End If
     Next i
     'set z(1) to best starting value
-    z(1) = (zmax(1) - zmin(1)) / 9 * maxi + zmin(1)
+    z(1) = m * maxi + zmin(1)
 
 'Initialize
-    crit(1) = 1
-    k = 2
-    Cells(2, 17) = z(1) 'initial smoothed value
+    crit.Add 1
+    Cells(2, 17) = z(1) 'XXX debug
 
-'Find critical points and interpolate between
-For i = 2 To seconds
-    zmin(i) = Cells(i + 1, 18)
-    zmax(i) = Cells(i + 1, 19)
-    critChange = False
-    
-    'check if last critical value exceeds current max or min
-    If z(crit(k - 1)) > zmax(i) Then
-        'reset k for two consecutive decreasing critical values
-        If crit(k - 1) = i - 1 And (z(i - 1) = zmax(i - 1) And i > maxi) Then k = k - 1
-        z(i) = zmax(i)
-        crit(k) = i
-        critChange = True
-    ElseIf z(crit(k - 1)) < zmin(i) Then
-        'reset k for two consecutive increasing critical values
-        If crit(k - 1) = i - 1 And (z(i - 1) = zmin(i - 1) And i > maxi) Then k = k - 1
-        z(i) = zmin(i)
-        crit(k) = i
-        critChange = True
-    ElseIf i = seconds Then
-        'extrapolate for tail values after last critical point
-        '  only if z(seconds) is not already a critical point
-        z(i) = m * i + b
-        crit(k) = seconds
-        critChange = True
+'Get critical points
+c2 = 3
+Do While c2 < seconds
+    c1 = crit(crit.count)
+    c2 = getnext(c1, z(c1), zmin, zmax)
+    If c2 < 0 Then
+        c2 = -c2
+        z(c2) = zmin(c2)
+    Else: z(c2) = zmax(c2)
     End If
-    
-    'check if linear interpolation violates min/max boundaries
-    If critChange Then
-        m = (z(i) - z(crit(k - 1))) / (crit(k) - crit(k - 1))
-        b = z(i) - m * crit(k)
-        For j = crit(k - 1) + 1 To crit(k) - 1
-            If j = i Then 'exit loop when i has been reset to lesser value (boundaries were violated)
-                Exit For
-            End If
-            z(j) = m * j + b
-            If z(j) > zmax(j) Then
-                z(j) = zmax(j)
-                crit(k) = j
-                maxi = i
-                i = j
-                m = (z(j) - z(crit(k - 1))) / (crit(k) - crit(k - 1))
-                b = z(j) - m * crit(k)
-                j = crit(k - 1)
-            ElseIf z(j) < zmin(j) Then
-                z(j) = zmin(j)
-                crit(k) = j
-                maxi = i
-                i = j
-                j = crit(k - 1)
-                m = (z(i) - z(j)) / (crit(k) - j)
-                b = z(i) - m * crit(k)
-            End If
-            Cells(j + 1, 17) = z(j)
-        Next j
-        k = k + 1
+    If c2 = seconds Then 'extrapolate from slope between last two points
+        m = (z(c1) - z(crit(crit.count - 1))) / (crit(crit.count - 1) - c1)
+    Else: m = (z(c2) - z(c1)) / (c2 - c1)
     End If
-    Cells(i + 1, 17) = z(i)
-Next i
+    For c = c1 + 1 To c2
+    'count to c2 instead of c2 - 1 to avoid errors for consecutive points
+        z(c) = z(c1) + m * (c - c1)
+        Cells(c + 1, 17) = z(c) 'XXX debug
+    Next c
+   crit.Add c2
+Loop
+
+'Write smoothed elevation to worksheet
+Cells(2, 17).Resize(seconds) = Application.Transpose(z(i))
 
 End Sub
+
+Private Function getnext(first As Long, firstval As Double, minbounds, maxbounds) As Long
+'returns the index of the next point to interpolate to
+'positive if it coincides with the maxbound, negative if it is minbound
+Dim index As Long, lastid As Long
+Dim slope As Double
+Dim inbounds As Boolean
+Dim bound As Integer, lastbound As Integer
+Dim ival As Double
+
+index = first
+slope = 0
+inbounds = True
+Do While inbounds
+    lastid = index
+    lastbound = bound
+    bound = 0
+    
+    'increment index until a bound is violated
+    Do While bound = 0 And index < seconds
+        index = index + 1
+        ival = firstval + slope * index
+        bound = checkbounds(ival, minbounds(index), maxbounds(index))
+    Loop
+    
+    If index < seconds Then
+        'set slope from violated boundary
+        If bound = 1 Then
+            slope = (maxbounds(index) - firstval) / (index - first)
+            Cells(index + 1, 17) = maxbounds(index) 'XXX debug
+        Else 'bound = -1
+            slope = (minbounds(index) - firstval) / (index - first)
+            Cells(index + 1, 17) = minbounds(index) 'XXX debug
+        End If
+        
+'xxx        If lastid > first Then 'skip on first execution so index always steps forward at least once
+        'check that new slope back to first point stays in bounds
+        inbounds = checkslope(first, index, firstval, slope, minbounds, maxbounds)
+'xxx        End If
+    Else: Exit Do
+    End If
+Loop
+
+If index = seconds Then
+    getnext = index
+Else 'revert to previous good point
+    getnext = lastid * lastbound
+End If
+
+End Function
+
+Private Function checkslope(x1 As Long, x2 As Long, y1 As Double, m As Double, minbounds As Variant, maxbounds As Variant) As Boolean
+'return True if all points interpolated on slope m are in bounds
+Dim x As Integer
+Dim y As Double
+    If x2 - x1 > 1 Then
+        For x = x2 - 1 To x1 + 1 Step -1
+            y = y1 + m * x
+            If checkbounds(y, minbounds(x), maxbounds(x)) <> 0 Then
+                checkslope = False
+                Exit Function
+            End If
+        Next x
+    End If
+    checkslope = True
+End Function
+
+Private Function checkbounds(checkval As Double, minbound As Variant, maxbound As Variant) As Integer
+'return 0 if checkval is between bounds, -1 if less than min, and 1 if greater than max
+    If checkval > minbound Then
+        If checkval < maxbound Then
+            checkbounds = 0
+        Else: checkbounds = 1
+        End If
+    Else: checkbounds = -1
+    End If
+End Function
+
+Private Sub kernel_smoothing(ycol As Integer, bandwidth As Double, Optional kerneltype As String = "G", Optional wcol As Integer, Optional wt As Double)
+'Performs a Nadaraya-Watson kernel-weighted average of values in ycol
+' with a window size (scaling factor) of bandwidth
+'assumes continuous data and constant time steps such that the weighting values are constant
+'performs a second weighting operation of with weights in column wcol, if present, based on factor wt
+Dim y() As Variant 'variable to smooth in icol
+Dim i As Integer
+Dim x As Long
+Dim K() As Double 'kernel weights
+Dim Ksum As Double
+Dim yKsum As Double
+Dim w As New Collection
+Dim fy() As Variant 'smoothed output
+Const seconds = 400 'xxx debug
+ReDim y(1 To seconds)
+ReDim fy(1 To seconds)
+ReDim K(0 To bandwidth - 1)
+
+'read values in array
+y = Application.Transpose(Cells(2, ycol).Resize(seconds).Value)
+
+Ksum = 0
+For x = 0 To bandwidth - 1
+    Select Case kerneltype
+        Case "G": K(x) = k_G(x, 0, bandwidth)
+        Case "E": K(x) = k_E(x, 0, bandwidth)
+    End Select
+    Ksum = Ksum + 2 * K(x)
+Next x
+Ksum = Ksum - K(0)
+
+'For x = 1 To seconds 'x in middle, use full bandwidth
+For x = bandwidth - 1 To seconds - bandwidth 'x in middle, use full bandwidth
+    If x >= bandwidth - 1 And x <= seconds - bandwidth Then
+        yKsum = 0
+        For i = 1 - bandwidth To bandwidth - 1
+            yKsum = yKsum + y(x + i + 1) * K(Abs(i))
+        Next i
+        fy(x + i) = yKsum / Ksum
+        Cells(x + 2, 17) = fy(x + i) 'xxx debug
+    Else 'x in end ranges, limit bandwidth and use regression
+'xxx debug with middle range only
+    End If
+Next x
+
+End Sub
+
+Private Function k_G(x As Long, x0 As Long, h As Double) As Double
+'Gaussian kernel
+    k_G = Exp(-(x0 - x) ^ 2 / (2 * (h) ^ 2))
+End Function
+
+Private Function k_E(x As Long, x0 As Long, h As Double) As Double
+'Epanechnikov kernel
+    If Abs(x) > h Then
+        k_E = 0
+    Else
+        k_E = (3 / 4) * (1 - ((x - x0) / h) ^ 2) / h
+    End If
+End Function
 
 Private Sub export_data(ByRef records_out As Long)
 Dim count As Long
 
 'write excel formulas to export sheet so changes to combo are dynamically adjusted
-    expo.Cells(2, 1).Resize(seconds).Formula = "=" & CStr(Val(Right(record, 5))) & " & ""."" & ROW() - 1" 'point_ID
+    expo.Cells(2, 1).Resize(seconds).Formula = "=" & CStr(val(Right(record, 5))) & " & ""."" & ROW() - 1" 'point_ID
     expo.Cells(2, 1).Resize(seconds).Copy
     expo.Cells(2, 1).PasteSpecial xlPasteValues 'paste values
     expo.Cells(2, 2).Resize(seconds, 2).FormulaR1C1 = "=Combo!RC[11]" 'northing, easting
@@ -1283,7 +1602,7 @@ Dim count As Long
     On Error Resume Next
     records_out = seconds
     row = Application.Match("d", expo.Cells(2, 8).Resize(records_out), 0) + 1
-    Do While Err.Number = 0
+    Do While Err.number = 0
         count = 0
         Do While expo.Cells(row + count, 8) = "d"
             count = count + 1
@@ -1292,6 +1611,8 @@ Dim count As Long
         records_out = records_out - count
         row = Application.Match("d", expo.Cells(2, 8).Resize(records_out), 0) + 1
     Loop
+    If records_out < seconds Then outlog.Add " - " & seconds - records_out & " records deleted"
+    outlog.Add " - " & records_out & " records exported"
     On Error GoTo 0
     
 'update formatting
@@ -1300,7 +1621,7 @@ Dim count As Long
     expo.Cells(2, 5).Resize(records_out).NumberFormat = "m/d/yyyy hh:mm:ss"
     
 'update plot range
-    count = Len(CStr(Val(Right(record, 5))))
+    count = Len(CStr(val(Right(record, 5))))
     plotdata.Cells(2, 3).Resize(records_out).FormulaR1C1 = "=VALUE(RIGHT(Export!RC[-2],LEN(Export!RC[-2])-" & count + 1 & "))"
 
 End Sub
@@ -1339,8 +1660,29 @@ Private Sub save_files()
     Application.DisplayAlerts = False
     'save Current workbook with record number
         combo.SaveAs Filename:=path & record & "_Final.xlsx", FileFormat:=xlOpenXMLWorkbook
+        outlog.Add "Exported " & path & record & "_Final.xlsx"
     'activate Export tab and save as CSV
         expo.SaveAs Filename:=path & record & ".csv", FileFormat:=xlCSV
+        outlog.Add "Exported " & path & record & ".csv"
         Set mybook = ActiveWorkbook
     Application.DisplayAlerts = True
+End Sub
+
+Private Sub writelog()
+'Write contents of outlog to Log sheet
+Dim dval As Variant
+Dim dlog As New Dictionary
+Dim i As Integer
+
+i = 1
+For Each dval In outlog
+    dlog.Add i, dval
+    i = i + 1
+Next dval
+'after iteration i = ubound(dlog) + 1
+Application.ScreenUpdating = False
+logs.Cells(1, 1).Resize(i - 1).NumberFormat = "@" 'format cells as text
+logs.Cells(1, 1).Resize(i - 1) = Application.WorksheetFunction.Transpose(dlog.Items)
+Application.ScreenUpdating = True
+
 End Sub
