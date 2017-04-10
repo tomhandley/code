@@ -61,10 +61,6 @@ Dim utc_shift As Integer 'number of hours to shift sonar times forward/back to m
 Dim nrtk As Long
 Dim out_points As Long
 
-Stop 'xxx
-kernel_smoothing 16, 5, "E"
-Exit Sub 'xxx
-
 'Read defaults from text file
     outlog.Add "Processing started at " & Now
     Application.StatusBar = "Reading defaults"
@@ -169,9 +165,21 @@ Exit Sub 'xxx
     interpolate_rtk nrtk + 1
 
 'Smooth rtk elevation points
-    Stop 'xxx
-    critical
+    outlog.Add ""
+    outlog.Add "=== SMOOTHING ==="
+    kernel_smoothing 16, 5, "E", 21, 5
 
+'Update combo sheet formatting
+    combo.Cells(2, 2).Resize(seconds).NumberFormat = "m/dd/yyyy hh:mm:ss"
+    combo.Cells(2, 12).Resize(seconds).NumberFormat = "m/dd/yyyy hh:mm:ss"
+    combo.Cells(2, 6).Resize(seconds).NumberFormat = "0.00"
+    combo.Cells(2, 15).Resize(seconds).NumberFormat = "0.00"
+    combo.Cells(2, 4).Resize(seconds, 2).NumberFormat = "0.0000"
+    combo.Cells(2, 13).Resize(seconds, 2).NumberFormat = "0.0000"
+    combo.Cells(2, 7).Resize(seconds, 3).NumberFormat = "0.000"
+    combo.Cells(2, 16).Resize(seconds, 6).NumberFormat = "0.000"
+    combo.Cells(2, 2).Resize(seconds, 20).HorizontalAlignment = xlCenter
+    
 'Extract data to export sheet
     outlog.Add ""
     outlog.Add "=== EXPORT RECORDS ==="
@@ -195,8 +203,9 @@ Dim SaveOn As VbMsgBoxResult
         writelog
         save_files
         If showfile Then
+            fileprompt = vbYes
+        Else
             fileprompt = MsgBox("Record " & record & " successfully processed and saved. View processed file?", vbYesNo)
-        Else: fileprompt = vbYes
         End If
         'reopen blank R000XX_Final_Template
         Application.Workbooks.Open basepath & "R000XX_Final_Template.xlsm"
@@ -320,7 +329,14 @@ Dim cog As Double 'course over ground
     For row = 1 To fLen \ 8 - 1
         sonar.Cells(row + 1, 5) = get_cog(sonar.Cells(row + 1, 2), sonar.Cells(row + 2, 2), sonar.Cells(row + 1, 3), sonar.Cells(row + 2, 3))
     Next row
-    outlog.Add row - 1 & " sonar pings imported"
+    
+'update formatting and write log
+    sonar.Cells(2, 1).Resize(row).NumberFormat = "m/dd/yyyy hh:mm:ss"
+    sonar.Cells(2, 2).Resize(row, 2).NumberFormat = "0.0000"
+    sonar.Cells(2, 4).Resize(row).NumberFormat = "0.000"
+    sonar.Cells(2, 5).Resize(row).NumberFormat = "0.00"
+    sonar.Cells(2, 1).Resize(row, 5).HorizontalAlignment = xlCenter
+    outlog.Add row & " sonar pings imported"
 
 End Sub
 
@@ -754,12 +770,18 @@ Dim dt As Long
     outlog.Add nrecords & " RTK records imported"
     outlog.Add "RTK rows " & rtk_start & " to " & rtk_end
     'copy data from rtk_book
-    mybook.Worksheets("RTK").Cells(2, 1).Resize(nrecords, 17).Value = rtk_book.Worksheets(1).Cells(rtk_start, 1).Resize(nrecords, 17).Value
+    mybook.Worksheets("RTK").Cells(2, 1).Resize(nrecords, 17).value = rtk_book.Worksheets(1).Cells(rtk_start, 1).Resize(nrecords, 17).value
     Application.DisplayAlerts = False 'prevent "Save changes" dialog
     rtk_book.Close
     Application.DisplayAlerts = True
     mybook.Activate
     Application.ScreenUpdating = True
+    
+'update formatting
+    rtk.Cells(2, 3).Resize(nrecords).NumberFormat = "m/dd/yyyy hh:mm:ss"
+    rtk.Cells(2, 4).Resize(nrecords, 2).NumberFormat = "0.0000"
+    rtk.Cells(2, 6).Resize(nrecords, 7).NumberFormat = "0.000"
+    rtk.Cells(2, 1).Resize(nrecords, 16).HorizontalAlignment = xlCenter
 
 End Sub
 
@@ -1261,321 +1283,114 @@ Private Function timer(time1 As Date, time2 As Date, Optional ord As Integer = 1
     timer = ord * (time1 - time2) * 24 * 3600
 End Function
 
-'XXXXXX
-'Private Sub critical()
-''Identify critical points in elevation and interpolate linearly
-''between critical points. Points are stored in crit() with values
-''in z(), which could be passed as arguments to a more sophisticated
-''interpolation technique such as splining.
-'Dim zmin() As Variant, zmax() As Variant 'min/max possible elevation from RTK
-'Dim k As Integer
-'Dim maxi As Integer, maxj As Integer
-'Dim i As Long, j As Long
-'Dim z() As Double 'stores values of critical points
-'Dim crit() As Integer 'stores indices of critical points
-'Dim critChange As Boolean
-'Dim m As Double, b As Double
-'ReDim zmin(1 To seconds)
-'ReDim zmax(1 To seconds)
-'ReDim z(1 To seconds)
-'ReDim crit(1 To seconds)
-'
-'zmin() = Application.Transpose(Cells(2, 18).Resize(seconds))
-'zmax() = Application.Transpose(Cells(2, 19).Resize(seconds))
-'
-''Determine which starting value stays within min/max bounds the longest
-'    maxi = 0
-'    For i = 0 To 9 'test 10 starting values ranging from zmin to zmax
-'        z(1) = (zmax(1) - zmin(1)) / 9 * i + zmin(1)
-'        j = 2
-'        Do While z(1) >= zmin(j) And z(1) <= zmax(j)
-'            j = j + 1
-''xxx            zmin(j) = Cells(j + 1, 18)
-''xxx            zmax(j) = Cells(j + 1, 19)
-'        Loop
-'        If j > maxj Then
-'            maxj = j
-'            maxi = i
-'        Else
-'            If j = maxj And Abs(i - 4.5) < Abs(maxi - 4.5) Then 'where two j's are equivalent, choose i closer to the middle
-'                maxi = i
-'            End If
-'        End If
-'    Next i
-'    'set z(1) to best starting value
-'    z(1) = (zmax(1) - zmin(1)) / 9 * maxi + zmin(1)
-'
-''Initialize
-'    crit(1) = 1
-'    k = 2
-''xxx    Cells(2, 17) = z(1) 'initial smoothed value
-'
-''Find critical points and interpolate between
-'For i = 2 To seconds
-'    critChange = False
-'    'check if last critical value exceeds current max or min
-'    If z(crit(k - 1)) > zmax(i) Then
-'        'reset k for two consecutive decreasing critical values
-'        If crit(k - 1) = i - 1 And (z(i - 1) = zmax(i - 1) And i > maxi) Then k = k - 1
-'        z(i) = zmax(i)
-'        crit(k) = i
-'        critChange = True
-'    ElseIf z(crit(k - 1)) < zmin(i) Then
-'        'reset k for two consecutive increasing critical values
-'        If crit(k - 1) = i - 1 And (z(i - 1) = zmin(i - 1) And i > maxi) Then k = k - 1
-'        Do While zmin(i + count) > zmin(i) And i <= seconds
-'            i = i + 1
-'        Loop
-'        z(i) = zmin(i)
-'        crit(k) = i
-'        critChange = True
-'    ElseIf i = seconds Then
-'        'extrapolate for tail values after last critical point
-'        '  only if z(seconds) is not already a critical point
-'        z(i) = m * i + b
-'        crit(k) = seconds
-'        critChange = True
-'    End If
-'
-'    'check if linear interpolation violates min/max boundaries
-'    If critChange Then
-'        m = (z(i) - z(crit(k - 1))) / (crit(k) - crit(k - 1))
-'        b = z(i) - m * crit(k)
-'        For j = crit(k - 1) + 1 To crit(k) - 1
-'            If j = i Then 'exit loop when i has been reset to lesser value (boundaries were violated)
-'                Exit For
-'            End If
-'            z(j) = m * j + b
-'            If z(j) > zmax(j) Then
-'                z(j) = zmax(j)
-'                crit(k) = j
-'                maxi = i
-'                i = j
-'                m = (z(j) - z(crit(k - 1))) / (crit(k) - crit(k - 1))
-'                b = z(j) - m * crit(k)
-'                j = crit(k - 1)
-'            ElseIf z(j) < zmin(j) Then
-'                z(j) = zmin(j)
-'                crit(k) = j
-'                maxi = i
-'                i = j
-'                j = crit(k - 1)
-'                m = (z(i) - z(j)) / (crit(k) - j)
-'                b = z(i) - m * crit(k)
-'            End If
-''xxx            Cells(j + 1, 17) = z(j)
-'        Next j
-'        k = k + 1
-'    End If
-''xxx    Cells(i + 1, 17) = z(i)
-'Next i
-'Cells(2, 17).Resize(seconds) = Application.Transpose(z(i))
-'
-'End Sub
-'XXXXXX
-
-Private Sub critical()
-'Identify critical points in elevation and interpolate linearly
-'between critical points. Points are stored in crit() with values
-'in z(), which could be passed as arguments to a more sophisticated
-'interpolation technique such as splining.
-Dim zmin() As Variant, zmax() As Variant 'min/max possible elevation from RTK
-Dim i As Long, j As Long
-Dim maxi As Integer, maxj As Integer
-Dim m As Double 'slope
-Dim z() As Double 'stores values of critical points
-Dim crit As New Collection 'stores indices of critical points
-Dim c1 As Long, c2 As Long, c As Long
-ReDim zmin(1 To seconds)
-ReDim zmax(1 To seconds)
-ReDim z(1 To seconds)
-
-zmin = Application.Transpose(Cells(2, 18).Resize(seconds).Value)
-zmax = Application.Transpose(Cells(2, 19).Resize(seconds).Value)
-
-'Determine which starting value stays within min/max bounds the longest
-    maxi = 0
-    maxj = 0
-    m = (zmax(1) - zmin(1)) / 9
-    For i = 0 To 9 'test 10 starting values ranging from zmin to zmax
-        z(1) = m * i + zmin(1)
-        j = 2
-        Do While z(1) >= zmin(j) And z(1) <= zmax(j)
-            j = j + 1
-        Loop
-        If j > maxj Then
-            maxi = i
-            maxj = j
-        Else
-            If j = maxj And Abs(i - 4.5) < Abs(maxi - 4.5) Then 'where two j's are equivalent, choose i closer to the middle
-                maxi = i
-            End If
-        End If
-    Next i
-    'set z(1) to best starting value
-    z(1) = m * maxi + zmin(1)
-
-'Initialize
-    crit.Add 1
-    Cells(2, 17) = z(1) 'XXX debug
-
-'Get critical points
-c2 = 3
-Do While c2 < seconds
-    c1 = crit(crit.count)
-    c2 = getnext(c1, z(c1), zmin, zmax)
-    If c2 < 0 Then
-        c2 = -c2
-        z(c2) = zmin(c2)
-    Else: z(c2) = zmax(c2)
-    End If
-    If c2 = seconds Then 'extrapolate from slope between last two points
-        m = (z(c1) - z(crit(crit.count - 1))) / (crit(crit.count - 1) - c1)
-    Else: m = (z(c2) - z(c1)) / (c2 - c1)
-    End If
-    For c = c1 + 1 To c2
-    'count to c2 instead of c2 - 1 to avoid errors for consecutive points
-        z(c) = z(c1) + m * (c - c1)
-        Cells(c + 1, 17) = z(c) 'XXX debug
-    Next c
-   crit.Add c2
-Loop
-
-'Write smoothed elevation to worksheet
-Cells(2, 17).Resize(seconds) = Application.Transpose(z(i))
-
-End Sub
-
-Private Function getnext(first As Long, firstval As Double, minbounds, maxbounds) As Long
-'returns the index of the next point to interpolate to
-'positive if it coincides with the maxbound, negative if it is minbound
-Dim index As Long, lastid As Long
-Dim slope As Double
-Dim inbounds As Boolean
-Dim bound As Integer, lastbound As Integer
-Dim ival As Double
-
-index = first
-slope = 0
-inbounds = True
-Do While inbounds
-    lastid = index
-    lastbound = bound
-    bound = 0
-    
-    'increment index until a bound is violated
-    Do While bound = 0 And index < seconds
-        index = index + 1
-        ival = firstval + slope * index
-        bound = checkbounds(ival, minbounds(index), maxbounds(index))
-    Loop
-    
-    If index < seconds Then
-        'set slope from violated boundary
-        If bound = 1 Then
-            slope = (maxbounds(index) - firstval) / (index - first)
-            Cells(index + 1, 17) = maxbounds(index) 'XXX debug
-        Else 'bound = -1
-            slope = (minbounds(index) - firstval) / (index - first)
-            Cells(index + 1, 17) = minbounds(index) 'XXX debug
-        End If
-        
-'xxx        If lastid > first Then 'skip on first execution so index always steps forward at least once
-        'check that new slope back to first point stays in bounds
-        inbounds = checkslope(first, index, firstval, slope, minbounds, maxbounds)
-'xxx        End If
-    Else: Exit Do
-    End If
-Loop
-
-If index = seconds Then
-    getnext = index
-Else 'revert to previous good point
-    getnext = lastid * lastbound
-End If
-
-End Function
-
-Private Function checkslope(x1 As Long, x2 As Long, y1 As Double, m As Double, minbounds As Variant, maxbounds As Variant) As Boolean
-'return True if all points interpolated on slope m are in bounds
-Dim x As Integer
-Dim y As Double
-    If x2 - x1 > 1 Then
-        For x = x2 - 1 To x1 + 1 Step -1
-            y = y1 + m * x
-            If checkbounds(y, minbounds(x), maxbounds(x)) <> 0 Then
-                checkslope = False
-                Exit Function
-            End If
-        Next x
-    End If
-    checkslope = True
-End Function
-
-Private Function checkbounds(checkval As Double, minbound As Variant, maxbound As Variant) As Integer
-'return 0 if checkval is between bounds, -1 if less than min, and 1 if greater than max
-    If checkval > minbound Then
-        If checkval < maxbound Then
-            checkbounds = 0
-        Else: checkbounds = 1
-        End If
-    Else: checkbounds = -1
-    End If
-End Function
-
-Private Sub kernel_smoothing(ycol As Integer, bandwidth As Double, Optional kerneltype As String = "G", Optional wcol As Integer, Optional wt As Double)
-'Performs a Nadaraya-Watson kernel-weighted average of values in ycol
-' with a window size (scaling factor) of bandwidth
+Private Sub kernel_smoothing(ycol As Integer, bandwidth As Integer, Optional kerneltype As String = "G", Optional wcol As Integer = 0, Optional wscale As Single = 0)
+'Performs a Nadaraya-Watson kernel-weighted average of values in ycol with a window size
+' (scaling factor) of bandwidth and local linear regression at boundaries
+'defaults to Gaussian kernel, use kerneltype = "E" for Epanechnikov
 'assumes continuous data and constant time steps such that the weighting values are constant
-'performs a second weighting operation of with weights in column wcol, if present, based on factor wt
+'performs a second weighting based on column wcol, if present, and factor wscale
+' large wscales approach sum(yKw)/sum(Kw) while wscale = 0 becomes sum(yK)/sum(K)
 Dim y() As Variant 'variable to smooth in icol
-Dim i As Integer
-Dim x As Long
+Dim w() As Variant 'array for weights
+Dim i As Integer, x As Long
 Dim K() As Double 'kernel weights
 Dim Ksum As Double
-Dim yKsum As Double
-Dim w As New Collection
+Dim yKsum As Double, yKsum2 As Double
+Dim Kwsum As Double, Kwsum2 As Double
+Dim yKwsum As Double, yKwsum2 As Double
 Dim fy() As Variant 'smoothed output
-Const seconds = 400 'xxx debug
+Dim t1 As linear, t2 As linear 'hold regression values at tails
 ReDim y(1 To seconds)
+ReDim w(1 To seconds)
 ReDim fy(1 To seconds)
 ReDim K(0 To bandwidth - 1)
 
-'read values in array
-y = Application.Transpose(Cells(2, ycol).Resize(seconds).Value)
+Application.StatusBar = "Smoothing elevation"
+outlog.Add IIf(kerneltype = "G", "Gaussian", "Epanechnikov") & " kernel smoothing executed"
+outlog.Add " - bandwidth = " & bandwidth
+If wcol > 0 Then
+    outlog.Add " - weighting column = " & Cells(1, wcol)
+    outlog.Add " - weighting scale = " & wscale
+Else
+    outlog.Add " - weighting column = none"
+End If
+
+'read values and weights (if present) in arrays
+y = Application.Transpose(Cells(2, ycol).Resize(seconds).value)
+If wcol > 0 Then
+    w = Application.Transpose(Cells(2, wcol).Resize(seconds).value)
+    For i = 1 To seconds
+        w(i) = max_z * 1.1 - w(i)
+    Next i
+Else
+    For i = 1 To seconds
+        w(i) = 1
+    Next i
+End If
 
 Ksum = 0
 For x = 0 To bandwidth - 1
     Select Case kerneltype
-        Case "G": K(x) = k_G(x, 0, bandwidth)
         Case "E": K(x) = k_E(x, 0, bandwidth)
+        Case Else: K(x) = k_G(x, 0, bandwidth)
     End Select
-    Ksum = Ksum + 2 * K(x)
+    Ksum = Ksum + K(x)
 Next x
-Ksum = Ksum - K(0)
+Ksum = 2 * Ksum - K(0) 'set sum to full range of bandwidth
 
-'For x = 1 To seconds 'x in middle, use full bandwidth
-For x = bandwidth - 1 To seconds - bandwidth 'x in middle, use full bandwidth
-    If x >= bandwidth - 1 And x <= seconds - bandwidth Then
-        yKsum = 0
-        For i = 1 - bandwidth To bandwidth - 1
-            yKsum = yKsum + y(x + i + 1) * K(Abs(i))
-        Next i
-        fy(x + i) = yKsum / Ksum
-        Cells(x + 2, 17) = fy(x + i) 'xxx debug
-    Else 'x in end ranges, limit bandwidth and use regression
-'xxx debug with middle range only
-    End If
+'kernel smoothing for tail values in y
+For x = bandwidth - 1 To 1 Step -1
+    Ksum = Ksum - K(x)
+    
+    yKsum = 0
+    yKsum2 = 0
+    Kwsum = 0
+    Kwsum2 = 0
+    yKwsum = 0
+    yKwsum2 = 0
+    For i = 1 - x To bandwidth - 1
+        yKsum = yKsum + y(x + i) * K(Abs(i))
+        yKsum2 = yKsum2 + y(seconds - x + 1 - i) * K(Abs(i))
+        Kwsum = Kwsum + K(Abs(i)) * w(x + i)
+        Kwsum2 = Kwsum2 + K(Abs(i)) * w(seconds - x + 1 - i)
+        yKwsum = yKwsum + y(x + i) * K(Abs(i)) * w(x + i)
+        yKwsum2 = yKwsum2 + y(seconds - x + 1 - i) * K(Abs(i)) * w(seconds - x + 1 - i)
+    Next i
+    fy(x) = (yKwsum / Kwsum * wscale + yKsum / Ksum) / (wscale + 1)
+    fy(seconds - x + 1) = (yKwsum2 / Kwsum2 * wscale + yKsum2 / Ksum) / (wscale + 1)
 Next x
+Ksum = 2 * Ksum - K(0) 'reset sum to full range of bandwidth
+
+'kernel smoothing for middle of y (no boundary effects)
+For x = bandwidth To seconds - bandwidth + 1
+    yKsum = 0
+    Kwsum = 0
+    yKwsum = 0
+    For i = 1 - bandwidth To bandwidth - 1
+        yKsum = yKsum + y(x + i) * K(Abs(i))
+        Kwsum = Kwsum + K(Abs(i)) * w(x + i)
+        yKwsum = yKwsum + y(x + i) * K(Abs(i)) * w(x + i)
+    Next i
+    fy(x) = (yKwsum / Kwsum * wscale + yKsum / Ksum) / (wscale + 1)
+Next x
+
+'local regression weighting for tails
+t1 = regress(CLng(bandwidth + 1), ycol + 1, bandwidth * 2, -1)
+t2 = regress(seconds - bandwidth + 2, ycol + 1, bandwidth * 2, , , seconds)
+For x = 1 To bandwidth - 1
+    fy(bandwidth - x) = fy(bandwidth - x) * K(x) / K(0) + (fy(bandwidth) - x * t1.b) * (K(0) - K(x)) / K(0)
+    fy(seconds - bandwidth + x + 1) = fy(seconds - bandwidth + x + 1) * K(x) / K(0) + (fy(seconds - bandwidth + 1) + x * t2.b) * (K(0) - K(x)) / K(0)
+Next x
+Cells(2, ycol + 1).Resize(seconds).value = Application.Transpose(fy)
 
 End Sub
 
-Private Function k_G(x As Long, x0 As Long, h As Double) As Double
+Private Function k_G(x As Long, x0 As Long, h As Integer) As Double
 'Gaussian kernel
     k_G = Exp(-(x0 - x) ^ 2 / (2 * (h) ^ 2))
 End Function
 
-Private Function k_E(x As Long, x0 As Long, h As Double) As Double
+Private Function k_E(x As Long, x0 As Long, h As Integer) As Double
 'Epanechnikov kernel
     If Abs(x) > h Then
         k_E = 0
@@ -1616,9 +1431,12 @@ Dim count As Long
     On Error GoTo 0
     
 'update formatting
+    expo.Cells(2, 1).Resize(records_out).NumberFormat = "@"
     expo.Cells(2, 2).Resize(records_out, 2).NumberFormat = "0.0000"
     expo.Cells(2, 4).Resize(records_out).NumberFormat = "0.000"
-    expo.Cells(2, 5).Resize(records_out).NumberFormat = "m/d/yyyy hh:mm:ss"
+    expo.Cells(2, 5).Resize(records_out).NumberFormat = "m/dd/yyyy hh:mm:ss"
+    expo.Cells(2, 1).Resize(records_out).HorizontalAlignment = xlRight
+    expo.Cells(2, 2).Resize(records_out, 7).HorizontalAlignment = xlCenter
     
 'update plot range
     count = Len(CStr(val(Right(record, 5))))
