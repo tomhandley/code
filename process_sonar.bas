@@ -125,7 +125,7 @@ Dim out_points As Long
     outlog.Add "Sonar record located at " & path & record & ".DAT.XYZ.csv"
     
 'Clear anything past header row on first four worksheets
-    For ws = 1 To 5
+    For ws = 1 To 6
         Set rng = Sheets(ws).UsedRange
         If rng.Rows.count > 1 Then
             Set rng = rng.Offset(1, 0).Resize(rng.Rows.count - 1)
@@ -576,14 +576,18 @@ Dim dt As Long
         Else: t1 = TimeValue(time1) + time_shift / 24
         End If
         If time2 = "end" Then
-            t2 = combo.Cells(seconds + 1, 2) - Int(combo.Cells(seconds + 1, 2))
+            t2 = combo.Cells(seconds + 1, 2)
         ElseIf dash > 0 Then
             t2 = TimeValue(time2) + time_shift / 24
         Else 'single point to flag
             t2 = t1
         End If
+        'remove date, if any
+        t1 = t1 - Int(t1)
+        t2 = t2 - Int(t2)
         If Err.number = 0 Then
             dt = timer(t2, t1) + 1
+            If dt < 0 Then dt = dt + CLng(24) * CLng(3600)
             count = timer(t1, start_time)
             If t1 < start_time Or dt + count > seconds Or (t2 < t1 And Hour(t2) <> 0) Then
                 MsgBox "Problem reading log entry: '" & entry & "'" & vbCrLf & _
@@ -885,7 +889,7 @@ combo.Activate
             Else
             'neither horizontal nor vertial precision OK
                 stats(4) = stats(4) + 1
-                Cells(combo_row, 20) = "> " & Format(Str(max_xy), "0.00") 'stdev_xy
+                Cells(combo_row, 20) = max_xy 'stdev_xy
                 Cells(combo_row, 21) = max_z 'stdev_z set to max for later smoothing
                 Cells(combo_row, 22) = "None,Interpolated"  'solution type
             End If
@@ -1290,14 +1294,16 @@ Private Sub kernel_smoothing(ycol As Integer, bandwidth As Integer, Optional ker
 'assumes continuous data and constant time steps such that the weighting values are constant
 'performs a second weighting based on column wcol, if present, and factor wscale
 ' large wscales approach sum(yKw)/sum(Kw) while wscale = 0 becomes sum(yK)/sum(K)
+'Background info -- http://www3.cs.stonybrook.edu/~datalab/docs/kernel-smoothing-methods.pdf
+
 Dim y() As Variant 'variable to smooth in icol
 Dim w() As Variant 'array for weights
 Dim i As Integer, x As Long
 Dim K() As Double 'kernel weights
-Dim Ksum As Double
-Dim yKsum As Double, yKsum2 As Double
-Dim Kwsum As Double, Kwsum2 As Double
-Dim yKwsum As Double, yKwsum2 As Double
+Dim sum_K As Double
+Dim sum_yK As Double, sum_yK2 As Double
+Dim sum_Kw As Double, sum_Kw2 As Double
+Dim sum_yKw As Double, sum_yKw2 As Double
 Dim fy() As Variant 'smoothed output
 Dim t1 As linear, t2 As linear 'hold regression values at tails
 ReDim y(1 To seconds)
@@ -1328,50 +1334,50 @@ Else
     Next i
 End If
 
-Ksum = 0
+sum_K = 0
 For x = 0 To bandwidth - 1
     Select Case kerneltype
         Case "E": K(x) = k_E(x, 0, bandwidth)
         Case Else: K(x) = k_G(x, 0, bandwidth)
     End Select
-    Ksum = Ksum + K(x)
+    sum_K = sum_K + K(x)
 Next x
-Ksum = 2 * Ksum - K(0) 'set sum to full range of bandwidth
+sum_K = 2 * sum_K - K(0) 'set sum to full range of bandwidth
 
 'kernel smoothing for tail values in y
 For x = bandwidth - 1 To 1 Step -1
-    Ksum = Ksum - K(x)
+    sum_K = sum_K - K(x)
     
-    yKsum = 0
-    yKsum2 = 0
-    Kwsum = 0
-    Kwsum2 = 0
-    yKwsum = 0
-    yKwsum2 = 0
+    sum_yK = 0
+    sum_yK2 = 0
+    sum_Kw = 0
+    sum_Kw2 = 0
+    sum_yKw = 0
+    sum_yKw2 = 0
     For i = 1 - x To bandwidth - 1
-        yKsum = yKsum + y(x + i) * K(Abs(i))
-        yKsum2 = yKsum2 + y(seconds - x + 1 - i) * K(Abs(i))
-        Kwsum = Kwsum + K(Abs(i)) * w(x + i)
-        Kwsum2 = Kwsum2 + K(Abs(i)) * w(seconds - x + 1 - i)
-        yKwsum = yKwsum + y(x + i) * K(Abs(i)) * w(x + i)
-        yKwsum2 = yKwsum2 + y(seconds - x + 1 - i) * K(Abs(i)) * w(seconds - x + 1 - i)
+        sum_yK = sum_yK + y(x + i) * K(Abs(i))
+        sum_yK2 = sum_yK2 + y(seconds - x + 1 - i) * K(Abs(i))
+        sum_Kw = sum_Kw + K(Abs(i)) * w(x + i)
+        sum_Kw2 = sum_Kw2 + K(Abs(i)) * w(seconds - x + 1 - i)
+        sum_yKw = sum_yKw + y(x + i) * K(Abs(i)) * w(x + i)
+        sum_yKw2 = sum_yKw2 + y(seconds - x + 1 - i) * K(Abs(i)) * w(seconds - x + 1 - i)
     Next i
-    fy(x) = (yKwsum / Kwsum * wscale + yKsum / Ksum) / (wscale + 1)
-    fy(seconds - x + 1) = (yKwsum2 / Kwsum2 * wscale + yKsum2 / Ksum) / (wscale + 1)
+    fy(x) = (sum_yKw / sum_Kw * wscale + sum_yK / sum_K) / (wscale + 1)
+    fy(seconds - x + 1) = (sum_yKw2 / sum_Kw2 * wscale + sum_yK2 / sum_K) / (wscale + 1)
 Next x
-Ksum = 2 * Ksum - K(0) 'reset sum to full range of bandwidth
+sum_K = 2 * sum_K - K(0) 'reset sum to full range of bandwidth
 
 'kernel smoothing for middle of y (no boundary effects)
 For x = bandwidth To seconds - bandwidth + 1
-    yKsum = 0
-    Kwsum = 0
-    yKwsum = 0
+    sum_yK = 0
+    sum_Kw = 0
+    sum_yKw = 0
     For i = 1 - bandwidth To bandwidth - 1
-        yKsum = yKsum + y(x + i) * K(Abs(i))
-        Kwsum = Kwsum + K(Abs(i)) * w(x + i)
-        yKwsum = yKwsum + y(x + i) * K(Abs(i)) * w(x + i)
+        sum_yK = sum_yK + y(x + i) * K(Abs(i))
+        sum_Kw = sum_Kw + K(Abs(i)) * w(x + i)
+        sum_yKw = sum_yKw + y(x + i) * K(Abs(i)) * w(x + i)
     Next i
-    fy(x) = (yKwsum / Kwsum * wscale + yKsum / Ksum) / (wscale + 1)
+    fy(x) = (sum_yKw / sum_Kw * wscale + sum_yK / sum_K) / (wscale + 1)
 Next x
 
 'local regression weighting for tails
@@ -1403,9 +1409,9 @@ Private Sub export_data(ByRef records_out As Long)
 Dim count As Long
 
 'write excel formulas to export sheet so changes to combo are dynamically adjusted
-    expo.Cells(2, 1).Resize(seconds).Formula = "=" & CStr(val(Right(record, 5))) & " & ""."" & ROW() - 1" 'point_ID
+    expo.Cells(2, 1).Resize(seconds).Formula = "=" & CStr(val(Right(record, 5))) & " & ""_"" & ROW() - 1" 'point_ID
     expo.Cells(2, 1).Resize(seconds).Copy
-    expo.Cells(2, 1).PasteSpecial xlPasteValues 'paste values
+    expo.Cells(2, 1).PasteSpecial xlPasteValues 'paste values full ID
     expo.Cells(2, 2).Resize(seconds, 2).FormulaR1C1 = "=Combo!RC[11]" 'northing, easting
     expo.Cells(2, 4).Resize(seconds).FormulaR1C1 = "=Combo!RC[13]-Combo!RC[3]" 'bottom = smoothed_elevation - depth
     expo.Cells(2, 5).Resize(seconds).FormulaR1C1 = "=Combo!RC[-3]" 'datetime
